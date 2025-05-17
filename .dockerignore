@@ -1,0 +1,7 @@
+.venv/
+.envrc
+.env.example
+.gitignore
+.python-version
+Dockerfile
+tweets-payload
