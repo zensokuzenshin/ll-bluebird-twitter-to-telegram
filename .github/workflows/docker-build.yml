@@ -71,13 +71,6 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # Ensure repository exists (create if needed)
-      - name: Create ECR repository if it doesn't exist
-        if: github.event_name != 'pull_request'
-        run: |
-          aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} || \
-          aws ecr create-repository --repository-name ${{ env.ECR_REPOSITORY }}
-
       # Build and push Docker image to ECR
       - name: Build and push image to Amazon ECR
         uses: docker/build-push-action@v5
