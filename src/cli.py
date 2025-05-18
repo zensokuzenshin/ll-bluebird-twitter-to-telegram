@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import datetime
 import config
 from common import logger, direct_search_and_forward
 
@@ -134,6 +135,45 @@ async def cmd_fetch_and_send(args):
         logger.info(f"Next cursor: {next_cursor}")
         current_cursor = next_cursor
         print(f"Fetched {count} tweets, continuing to next page...")
+    
+    # Sort tweets by date before forwarding (if needed)
+    if forward and all_results:
+        print("Sorting tweets by date before sending to Telegram...")
+        try:
+            # Create a list of (result, date) tuples for sorting
+            dated_results = []
+            
+            for result in all_results:
+                # Skip results without tweet_id or not a dict
+                if not isinstance(result, dict) or 'tweet_id' not in result:
+                    dated_results.append((result, None))  # Will go to the end
+                    continue
+                
+                # Extract the tweet ID and try to determine its date
+                tweet_id = result.get('tweet_id')
+                tweet_date = None
+                
+                # We don't have direct access to the tweet data from here
+                # Use timestamp or other information if available in the result
+                # For now, we'll rely on the order we received the tweets
+                # Twitter API typically returns tweets in reverse chronological order
+                # So we'll use the index as a proxy for time
+                index_in_results = all_results.index(result)
+                dated_results.append((result, index_in_results))
+            
+            # Sort by index (proxy for time), with None values at the end
+            # Reverse the sort to get oldest first (smallest index = oldest)
+            sorted_results = [r[0] for r in sorted(
+                dated_results,
+                key=lambda x: (x[1] is None, -x[1] if x[1] is not None else None)
+            )]
+            
+            # Replace all_results with the sorted version
+            all_results = sorted_results
+            print(f"Sorted {len(sorted_results)} tweets for chronological sending")
+        except Exception as e:
+            print(f"Warning: Failed to sort tweets: {str(e)}")
+            print("Will process tweets in their original order")
     
     # Print summary
     print(f"\nSearch for: {query}")
@@ -306,6 +346,68 @@ async def cmd_dump_tweets(args):
         logger.error(f"Error dumping tweets: {str(e)}")
         print(f"Error: {str(e)}")
 
+async def cmd_send_admin_notification(args):
+    """
+    Send an admin notification to Telegram using Mai's token.
+    
+    Args:
+        args: Command-line arguments after the subcommand
+    """
+    from telegram import send_telegram_message
+    
+    # Check if help is requested
+    if not args or args[0] in ['-h', '--help']:
+        print("Usage: send-admin-notification [message]")
+        print("\nOptions:")
+        print("  --no-header        Don't include the [관리자 공지] header")
+        print("\nExamples:")
+        print("  send-admin-notification 'Server maintenance scheduled for tomorrow'")
+        print("  send-admin-notification --no-header 'Quick update about the timeline'")
+        return
+    
+    # Parse options and extract message
+    add_header = True
+    message = None
+    
+    # Check for options first
+    filtered_args = []
+    for arg in args:
+        if arg == "--no-header":
+            add_header = False
+        else:
+            filtered_args.append(arg)
+    
+    # Get the message from remaining args
+    if filtered_args:
+        message = " ".join(filtered_args)
+    
+    if not message:
+        print("Error: No message provided")
+        return
+    
+    try:
+        # Always use "Mai" character for admin notifications
+        try:
+            mai_character = config.characters.mai
+        except (AttributeError, KeyError):
+            print(f"Error: 'mai' character not found in configuration")
+            return
+        
+        # Format the message with bold header if needed
+        if add_header:
+            formatted_message = f"<b>[관리자 공지]</b>\n\n{message}"
+        else:
+            formatted_message = message
+        
+        # Send the notification
+        print(f"Sending admin notification as {mai_character.name}...")
+        await send_telegram_message(mai_character, formatted_message)
+        print("✓ Admin notification sent successfully")
+        
+    except Exception as e:
+        print(f"Error sending admin notification: {str(e)}")
+
+
 async def cmd_send_from_file(args):
     """
     Read tweets from a JSON file and send them to Telegram.
@@ -435,6 +537,43 @@ async def cmd_send_from_file(args):
         print(f"File contains {total_tweets} tweets")
         print(f"Processing tweets {start_idx+1} to {end_idx} ({count_to_process} tweets)")
         
+        # Sort tweets by date before processing
+        print("Sorting tweets by date (oldest to newest)...")
+        try:
+            # Try to parse dates from tweets and sort
+            dated_tweets = []
+            for tweet_data in tweets_to_process:
+                # First try to use parsed_date if it exists
+                if 'parsed_date' in tweet_data:
+                    dated_tweets.append((tweet_data, tweet_data['parsed_date']))
+                    continue
+                    
+                # Otherwise, try to parse from createdAt
+                if 'createdAt' in tweet_data:
+                    try:
+                        date_obj = datetime.datetime.strptime(
+                            tweet_data['createdAt'],
+                            "%a %b %d %H:%M:%S %z %Y"
+                        )
+                        dated_tweets.append((tweet_data, date_obj))
+                    except (ValueError, TypeError):
+                        # If parsing fails, add with None date (will be at the end)
+                        dated_tweets.append((tweet_data, None))
+                else:
+                    # No date field found
+                    dated_tweets.append((tweet_data, None))
+            
+            # Sort by date, handling None dates
+            tweets_to_process = [t[0] for t in sorted(
+                dated_tweets,
+                key=lambda x: (x[1] is None, x[1])  # None values go to the end
+            )]
+            
+            print(f"Sorted {len(tweets_to_process)} tweets by date")
+        except Exception as e:
+            print(f"Warning: Failed to sort tweets by date: {str(e)}")
+            print("Will process tweets in their original order")
+        
         if dry_run:
             print("DRY RUN MODE: Tweets will not actually be sent to Telegram")
         
@@ -563,6 +702,7 @@ async def main_cli():
         "fetch-and-send": cmd_fetch_and_send,
         "dump-tweets": cmd_dump_tweets,
         "send-from-file": cmd_send_from_file,
+        "send-admin-notification": cmd_send_admin_notification,
         # Add more commands here as needed
     }
     
@@ -571,9 +711,10 @@ async def main_cli():
         print("Twitter to Telegram CLI")
         print("\nUsage: python cli.py <command> [options]")
         print("\nAvailable commands:")
-        print("  fetch-and-send    Fetch tweets and forward them to Telegram")
-        print("  dump-tweets       Fetch tweets and save them to a JSON file")
-        print("  send-from-file    Send tweets from a JSON file to Telegram")
+        print("  fetch-and-send          Fetch tweets and forward them to Telegram")
+        print("  dump-tweets             Fetch tweets and save them to a JSON file")
+        print("  send-from-file          Send tweets from a JSON file to Telegram")
+        print("  send-admin-notification Send an admin notification to Telegram as Mai")
         # Add more command descriptions here
         print("\nFor help on a specific command, run:")
         print("  python cli.py <command> --help")

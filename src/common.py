@@ -1,5 +1,6 @@
 import logging
 import os
+import datetime
 from typing import Dict, Any
 import httpx
 import config
@@ -76,6 +77,39 @@ async def direct_search_and_forward(
         
         # Limit the number of tweets to process
         tweets = tweets[:limit]
+        
+        # Sort tweets by date (oldest first) before processing
+        try:
+            # Create temporary list with (tweet, date) tuples for sorting
+            dated_tweets = []
+            for tweet in tweets:
+                parsed_date = None
+                # Try to get parsed date from tweet
+                if 'parsed_date' in tweet:
+                    parsed_date = tweet['parsed_date']
+                # Otherwise try to parse from createdAt
+                elif 'createdAt' in tweet:
+                    try:
+                        parsed_date = datetime.datetime.strptime(
+                            tweet['createdAt'],
+                            "%a %b %d %H:%M:%S %z %Y"
+                        )
+                    except (ValueError, TypeError):
+                        # If parsing fails, use None (will end up at the end)
+                        pass
+                dated_tweets.append((tweet, parsed_date))
+                
+            # Sort by date, with None dates at the end
+            # The tuple sort key: (is_none, date_value) ensures None values go last
+            sorted_tweets = [t[0] for t in sorted(
+                dated_tweets,
+                key=lambda x: (x[1] is None, x[1])
+            )]
+            tweets = sorted_tweets
+            logger.info(f"Sorted {len(tweets)} tweets by date (oldest first)")
+        except Exception as e:
+            logger.warning(f"Failed to sort tweets by date: {str(e)}")
+            logger.warning("Will process tweets in their original order")
         
         results = []
         
