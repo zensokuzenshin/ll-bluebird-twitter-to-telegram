@@ -1,7 +1,8 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from typing import Dict, Any
 import json
 import uvicorn
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from common import logger
 from tweet import Tweet, format_tweet_for_telegram
@@ -9,14 +10,33 @@ from telegram import send_telegram_message
 from translate import translate, TranslationError
 import config
 
+# Middleware to handle the x-envoy-external-address header
+class EnvoyExternalAddressMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Check if x-envoy-external-address header exists and set it as X-Forwarded-For
+        # so Uvicorn's access log will use it
+        if "x-envoy-external-address" in request.headers:
+            # This is a bit of a hack: We can't modify request.headers directly,
+            # but we can modify the underlying scope
+            request.scope["headers"].append(
+                (b"x-forwarded-for", request.headers["x-envoy-external-address"].encode())
+            )
+        
+        return await call_next(request)
+
 # Create FastAPI app instance
 app = FastAPI(title="Twitter to Telegram Forwarder")
 
+# Add the middleware
+app.add_middleware(EnvoyExternalAddressMiddleware)
+
 @app.post("/webhook", status_code=200)
-async def receive_webhook(payload: Dict[str, Any]):
+async def receive_webhook(payload: Dict[str, Any], request: Request):
     """
     Webhook endpoint to receive Twitter events and forward them to Telegram.
     """
+    # Get client IP - prefer x-envoy-external-address header if it exists
+    client_ip = request.headers.get("x-envoy-external-address", request.client.host)
     logger.info("Received webhook payload")
     
     # Log the full payload for debugging
@@ -152,11 +172,18 @@ async def receive_webhook(payload: Dict[str, Any]):
 
 
 @app.get("/health")
-async def health_check():
+async def health_check(request: Request):
     """Health check endpoint."""
-    return {"status": "ok"}
+    client_ip = request.headers.get("x-envoy-external-address", request.client.host)
+    return {"status": "ok", "client_ip": client_ip}
 
 
 if __name__ == "__main__":
-    # Run the FastAPI app
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Run the FastAPI app with proxy headers support
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=8000,
+        proxy_headers=True,  # Enable proxy headers handling
+        forwarded_allow_ips="*"  # Trust X-Forwarded-* headers from all IPs
+    )
