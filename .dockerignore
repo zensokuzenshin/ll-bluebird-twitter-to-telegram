@@ -1,7 +1,8 @@
 .venv/
+.direnv/
 .envrc
-.env.example
 .gitignore
-.python-version
 Dockerfile
-tweets-payload
+CLAUDE.md
+flake.lock
+flake.nix

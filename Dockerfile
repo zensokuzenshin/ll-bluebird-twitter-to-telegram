@@ -27,14 +27,16 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM base AS layered
 
 ENV PATH="/app/.venv/bin:$PATH"
+WORKDIR /app/src
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 FROM scratch AS final
 
 # Compress all layer to one for faster image download
-COPY --from=layered / /
+COPY --from=base / /
 
 ENV PATH="/app/.venv/bin:$PATH"
+WORKDIR /app/src
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
