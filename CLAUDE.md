@@ -23,19 +23,21 @@
    - Make data models flexible to handle variations in payload format
    - Only forward to Telegram after payload structure is verified
 
-2. Command line functionality:
+2. Do not create or modify README.md file
+
+3. Command line functionality:
    - Implement direct Twitter API access without going through FastAPI
    - Support pagination via cursor parameter
    - Allow toggling of Telegram forwarding for testing
    - Properly parse Twitter date format at the model level
 
-3. Code style preferences:
+4. Code style preferences:
    - Keep models simple with optional fields rather than duplicate field names
    - Use proper error handling and logging
    - Maintain clear distinction between webhook handler and CLI functionality
    - Use modular architecture with separate modules for tweet, translate, and telegram functionality 
 
-4. Translation requirements:
+5. Translation requirements:
    - Always translate tweets to Korean before forwarding
    - Fall back to original text only if translation fails
    - Log translation status for debugging purposes
