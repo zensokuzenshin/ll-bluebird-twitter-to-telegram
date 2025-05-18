@@ -29,7 +29,7 @@ FROM base AS layered
 ENV PATH="/app/.venv/bin:$PATH"
 WORKDIR /app/src
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
 
 FROM scratch AS final
 
@@ -39,4 +39,4 @@ COPY --from=base / /
 ENV PATH="/app/.venv/bin:$PATH"
 WORKDIR /app/src
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
