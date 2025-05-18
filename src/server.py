@@ -18,6 +18,14 @@ class EnvoyExternalAddressMiddleware(BaseHTTPMiddleware):
         if "x-envoy-external-address" in request.headers:
             # This is a bit of a hack: We can't modify request.headers directly,
             # but we can modify the underlying scope
+            
+            # Remove any existing x-forwarded-for headers
+            request.scope["headers"] = [
+                (key, value) for key, value in request.scope["headers"] 
+                if key.lower() != b"x-forwarded-for"
+            ]
+            
+            # Add our x-envoy-external-address as x-forwarded-for
             request.scope["headers"].append(
                 (b"x-forwarded-for", request.headers["x-envoy-external-address"].encode())
             )
