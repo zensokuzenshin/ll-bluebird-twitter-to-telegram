@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 from typing import Dict, Any
 import json
 import uvicorn
+import datetime
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from common import logger
@@ -83,6 +84,46 @@ async def receive_webhook(payload: Dict[str, Any], request: Request):
     if not tweets_list:
         logger.warning("No tweets found in payload")
         return {"status": "skipped", "reason": "No tweets found in payload"}
+    
+    # Sort tweets by date (oldest first) before processing
+    try:
+        logger.info("Sorting tweets by date (oldest first)...")
+        
+        # Create temporary list with (tweet, date) tuples for sorting
+        dated_tweets = []
+        for tweet_data in tweets_list:
+            if not isinstance(tweet_data, dict):
+                # Skip non-dictionary entries
+                dated_tweets.append((tweet_data, None))
+                continue
+                
+            parsed_date = None
+            # Try to get parsed date from tweet
+            if 'parsed_date' in tweet_data:
+                parsed_date = tweet_data['parsed_date']
+            # Otherwise try to parse from createdAt
+            elif 'createdAt' in tweet_data:
+                try:
+                    parsed_date = datetime.datetime.strptime(
+                        tweet_data['createdAt'],
+                        "%a %b %d %H:%M:%S %z %Y"
+                    )
+                except (ValueError, TypeError):
+                    # If parsing fails, use None (will end up at the end)
+                    pass
+            dated_tweets.append((tweet_data, parsed_date))
+            
+        # Sort by date, with None dates at the end
+        # The tuple sort key: (is_none, date_value) ensures None values go last
+        sorted_tweets = [t[0] for t in sorted(
+            dated_tweets,
+            key=lambda x: (x[1] is None, x[1])
+        )]
+        tweets_list = sorted_tweets
+        logger.info(f"Sorted {len(tweets_list)} tweets by date (oldest first)")
+    except Exception as e:
+        logger.warning(f"Failed to sort tweets by date: {str(e)}")
+        logger.warning("Will process tweets in their original order")
     
     # Process each tweet
     processed_tweets = []
