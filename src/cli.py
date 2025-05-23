@@ -1,6 +1,7 @@
 import asyncio
 import sys
 import datetime
+import logging
 import config
 from common import logger, direct_search_and_forward
 
@@ -719,7 +720,7 @@ async def cmd_show_config(args):
     print("\nTranslation:")
     print(f"  Model: {config.common.TRANSLATION_MODEL}")
     print(f"  Default model: {config.common.DEFAULT_TRANSLATION_MODEL}")
-    print(f"  Using custom model: {'Yes' if config.common.TRANSLATION_MODEL \!= config.common.DEFAULT_TRANSLATION_MODEL else 'No'}")
+    print(f"  Using custom model: {'Yes' if config.common.TRANSLATION_MODEL != config.common.DEFAULT_TRANSLATION_MODEL else 'No'}")
     
     # API endpoints
     print("\nAPI Endpoints:")
@@ -745,6 +746,118 @@ async def cmd_show_config(args):
 
 
 
+async def cmd_test_error_logger(args):
+    """
+    Test the error logger by sending a test message to Telegram.
+    """
+    import config
+    from logging_handlers import TelegramLogHandler
+    import time
+    
+    # Check if help is requested
+    if args and args[0] in ['-h', '--help']:
+        print("Usage: test-error-logger [message]")
+        print("\nOptions:")
+        print("  message        Optional custom message to send (default: test message)")
+        print("\nExamples:")
+        print("  test-error-logger")
+        print("  test-error-logger 'Custom test message'")
+        return
+    
+    # Check if error logger is configured
+    if not config.common.TELEGRAM_ERROR_BOT_TOKEN or not config.common.TELEGRAM_ERROR_CHAT_ID:
+        print("Error: Telegram error logger is not configured")
+        print("Please set TELEGRAM_ERROR_BOT_TOKEN and TELEGRAM_ERROR_CHAT_ID environment variables")
+        return
+    
+    # Get custom message if provided
+    message = " ".join(args) if args else "This is a test error message"
+    
+    print(f"Sending test error message to Telegram: '{message}'")
+    
+    # Create the handler directly
+    handler = TelegramLogHandler(
+        config.common.TELEGRAM_ERROR_BOT_TOKEN,
+        config.common.TELEGRAM_ERROR_CHAT_ID,
+        level=logging.ERROR
+    )
+    
+    # Format a message for Telegram directly
+    formatted_message = f"🧪 TEST ALERT: {message}"
+    
+    # Send directly using the handler's async method
+    await handler._async_send(formatted_message)
+    
+    print("Test error message sent to Telegram")
+    print(f"Bot token: {config.common.TELEGRAM_ERROR_BOT_TOKEN[:5]}...{config.common.TELEGRAM_ERROR_BOT_TOKEN[-5:]}")
+    print(f"Chat ID: {config.common.TELEGRAM_ERROR_CHAT_ID}")
+
+
+async def cmd_test_exception(args):
+    """
+    Test the error logger by raising an exception that should be logged.
+    """
+    import config
+    from logging_handlers import TelegramLogHandler
+    import time
+    import socket
+    import traceback
+    
+    # Check if help is requested
+    if args and args[0] in ['-h', '--help']:
+        print("Usage: test-exception [message]")
+        print("\nOptions:")
+        print("  message        Optional custom message to include in the exception (default: test exception)")
+        print("\nExamples:")
+        print("  test-exception")
+        print("  test-exception 'Database connection failed'")
+        return
+    
+    # Check if error logger is configured
+    if not config.common.TELEGRAM_ERROR_BOT_TOKEN or not config.common.TELEGRAM_ERROR_CHAT_ID:
+        print("Error: Telegram error logger is not configured")
+        print("Please set TELEGRAM_ERROR_BOT_TOKEN and TELEGRAM_ERROR_CHAT_ID environment variables")
+        return
+    
+    # Get custom message if provided
+    message = " ".join(args) if args else "Test exception for error logging"
+    
+    print(f"Raising a test exception: '{message}'")
+    print("This exception should be logged and sent to Telegram.")
+    
+    # Create the handler directly
+    handler = TelegramLogHandler(
+        config.common.TELEGRAM_ERROR_BOT_TOKEN,
+        config.common.TELEGRAM_ERROR_CHAT_ID,
+        level=logging.ERROR
+    )
+    
+    # Now raise an exception that should be caught and logged
+    try:
+        # Simulate a division by zero error
+        result = 1 / 0
+    except Exception as e:
+        # Get the traceback information
+        exc_traceback = traceback.format_exc()
+        
+        # Log the exception with the message
+        logger.error(f"{message}: {str(e)}", exc_info=True)
+        
+        # Format a message for Telegram directly
+        hostname = socket.gethostname()
+        telegram_message = f"🚨 *Test Error on {hostname}*\n\n"
+        telegram_message += f"```\n{message}: {str(e)}\n\n{exc_traceback}\n```"
+        
+        # Send directly using the handler's async method
+        print("Sending error directly to Telegram...")
+        await handler._async_send(telegram_message)
+        
+        print("Exception raised and test message sent. Check your Telegram.")
+        
+        # Return to avoid propagating the exception
+        return
+
+
 async def main_cli():
     """Command-line interface for the Twitter to Telegram tool."""
     # List of available commands
@@ -753,6 +866,8 @@ async def main_cli():
         "dump-tweets": cmd_dump_tweets,
         "send-from-file": cmd_send_from_file,
         "send-admin-notification": cmd_send_admin_notification,
+        "test-error-logger": cmd_test_error_logger,
+        "test-exception": cmd_test_exception,
         "show-config": cmd_show_config,
         # Add more commands here as needed
     }
@@ -766,6 +881,8 @@ async def main_cli():
         print("  dump-tweets             Fetch tweets and save them to a JSON file")
         print("  send-from-file          Send tweets from a JSON file to Telegram")
         print("  send-admin-notification Send an admin notification to Telegram as Mai")
+        print("  test-error-logger       Test the error logging system by sending a test message")
+        print("  test-exception          Test the error logger with a simulated exception")
         print("  show-config             Display current configuration settings")
         # Add more command descriptions here
         print("\nFor help on a specific command, run:")
