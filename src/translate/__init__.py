@@ -31,7 +31,7 @@ async def translate(
     Args:
         text: The Japanese text to translate
         api_key: API key for the Anthropic service (defaults to config.common.ANTHROPIC_API_KEY)
-        model: Model name to use for translation
+        model: Model name to use for translation (defaults to config.common.TRANSLATION_MODEL)
 
     Returns:
         The translated Korean text
@@ -48,6 +48,9 @@ async def translate(
         api_key = config.common.ANTHROPIC_API_KEY
         if not api_key:
             raise TranslationError("No API key provided. Set ANTHROPIC_API_KEY environment variable or pass api_key.")
+            
+    # Log which model we're using
+    logger.info(f"Translating text using model: {model}")
 
     # Load translation prompt
     try:

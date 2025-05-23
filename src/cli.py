@@ -695,6 +695,56 @@ async def cmd_send_from_file(args):
     except Exception as e:
         print(f"Error: {str(e)}")
 
+async def cmd_show_config(args):
+    """
+    Display the current configuration settings.
+    
+    Args:
+        args: Command-line arguments after the subcommand
+    """
+    import config
+    
+    # Check if help is requested
+    if args and args[0] in ['-h', '--help']:
+        print("Usage: show-config")
+        print("\nDescription:")
+        print("  Display the current configuration settings, including API endpoints and model details.")
+        print("  This can be helpful for debugging or confirming your environment is set up correctly.")
+        return
+    
+    print("Current Configuration Settings:")
+    print("==============================")
+    
+    # Translation settings
+    print("\nTranslation:")
+    print(f"  Model: {config.common.TRANSLATION_MODEL}")
+    print(f"  Default model: {config.common.DEFAULT_TRANSLATION_MODEL}")
+    print(f"  Using custom model: {'Yes' if config.common.TRANSLATION_MODEL \!= config.common.DEFAULT_TRANSLATION_MODEL else 'No'}")
+    
+    # API endpoints
+    print("\nAPI Endpoints:")
+    print(f"  Twitter API base URL: {config.common.TWITTER_API_BASE_URL}")
+    print(f"  Twitter search endpoint: {config.common.TWITTER_SEARCH_ENDPOINT}")
+    
+    # Check environment variables (without showing full values)
+    print("\nAPI Keys (Status):")
+    print(f"  ANTHROPIC_API_KEY: {'Configured' if config.common.ANTHROPIC_API_KEY else 'Not set'}")
+    print(f"  TWITTER_API_KEY: {'Configured' if config.common.TWITTER_API_KEY else 'Not set'}")
+    
+    # Telegram settings
+    print("\nTelegram:")
+    print(f"  Primary chat ID: {'Configured' if config.common.TELEGRAM_CHAT_ID else 'Not set'}")
+    
+    # Characters
+    print("\nConfigured Characters:")
+    for name in sorted(config.characters._character_config.keys()):
+        char = config.characters._character_config[name]
+        print(f"  - {name.capitalize()} (@{char.twitter_handle})")
+        
+    print("\nNote: To change the translation model, set the TRANSLATION_MODEL environment variable.")
+
+
+
 async def main_cli():
     """Command-line interface for the Twitter to Telegram tool."""
     # List of available commands
@@ -703,6 +753,7 @@ async def main_cli():
         "dump-tweets": cmd_dump_tweets,
         "send-from-file": cmd_send_from_file,
         "send-admin-notification": cmd_send_admin_notification,
+        "show-config": cmd_show_config,
         # Add more commands here as needed
     }
     
@@ -715,6 +766,7 @@ async def main_cli():
         print("  dump-tweets             Fetch tweets and save them to a JSON file")
         print("  send-from-file          Send tweets from a JSON file to Telegram")
         print("  send-admin-notification Send an admin notification to Telegram as Mai")
+        print("  show-config             Display current configuration settings")
         # Add more command descriptions here
         print("\nFor help on a specific command, run:")
         print("  python cli.py <command> --help")

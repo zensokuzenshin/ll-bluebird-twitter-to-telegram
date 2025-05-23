@@ -10,4 +10,5 @@ TWITTER_SEARCH_ENDPOINT = "/twitter/tweet/advanced_search"
 TWITTER_API_KEY = os.getenv("TWITTER_API_KEY")
 
 # Translation settings
-TRANSLATION_MODEL = "claude-3-7-sonnet-20250219"
+DEFAULT_TRANSLATION_MODEL = "claude-3-7-sonnet-20250219"
+TRANSLATION_MODEL = os.getenv("TRANSLATION_MODEL", DEFAULT_TRANSLATION_MODEL)
