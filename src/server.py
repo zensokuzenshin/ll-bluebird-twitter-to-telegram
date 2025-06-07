@@ -166,34 +166,44 @@ async def receive_webhook(payload: Dict[str, Any], request: Request):
                             logger.error(f"Unexpected error during translation: {str(e)}")
                     
                     # Format and forward the tweet (translated if available)
-                    if translated_text:
-                        # Create a copy of the tweet with translated text
-                        tweet_dict = tweet.dict()
-                        tweet_dict["text"] = translated_text
-                        translated_tweet = Tweet.parse_obj(tweet_dict)
-                        formatted_message = format_tweet_for_telegram(translated_tweet)
-                        
-                        await send_telegram_message(character, formatted_message)
-                        
+                    try:
+                        if translated_text:
+                            # Create a copy of the tweet with translated text
+                            tweet_dict = tweet.dict()
+                            tweet_dict["text"] = translated_text
+                            translated_tweet = Tweet.parse_obj(tweet_dict)
+                            formatted_message = format_tweet_for_telegram(translated_tweet)
+                            
+                            await send_telegram_message(character, formatted_message)
+                            
+                            processed_tweets.append({
+                                "id": tweet.id,
+                                "forwarded": True,
+                                "character": character.name,
+                                "translated": True
+                            })
+                            logger.info(f"Successfully forwarded translated tweet {tweet.id} as {character.name}")
+                        else:
+                            # Fall back to original if translation failed
+                            formatted_message = format_tweet_for_telegram(tweet)
+                            await send_telegram_message(character, formatted_message)
+                            
+                            processed_tweets.append({
+                                "id": tweet.id,
+                                "forwarded": True,
+                                "character": character.name,
+                                "translated": False
+                            })
+                            logger.info(f"Successfully forwarded original tweet {tweet.id} as {character.name} (translation failed)")
+                    except Exception as e:
+                        # Error and user notification are already handled in send_telegram_message
+                        logger.error(f"Error sending tweet to Telegram: {str(e)}")
                         processed_tweets.append({
                             "id": tweet.id,
-                            "forwarded": True,
+                            "forwarded": False,
                             "character": character.name,
-                            "translated": True
+                            "error": "Message delivery failed"
                         })
-                        logger.info(f"Successfully forwarded translated tweet {tweet.id} as {character.name}")
-                    else:
-                        # Fall back to original if translation failed
-                        formatted_message = format_tweet_for_telegram(tweet)
-                        await send_telegram_message(character, formatted_message)
-                        
-                        processed_tweets.append({
-                            "id": tweet.id,
-                            "forwarded": True,
-                            "character": character.name,
-                            "translated": False
-                        })
-                        logger.info(f"Successfully forwarded original tweet {tweet.id} as {character.name} (translation failed)")
                 except (KeyError, AttributeError):
                     logger.warning(f"No matching character found for @{author_username}")
                     processed_tweets.append({

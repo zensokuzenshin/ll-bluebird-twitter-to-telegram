@@ -858,6 +858,41 @@ async def cmd_test_exception(args):
         return
 
 
+async def cmd_test_translation_retry(args):
+    """
+    Test the translation retry mechanism with actual API calls.
+    """
+    from translate import translate, TranslationError
+    
+    # Check if help is requested
+    if args and args[0] in ['-h', '--help']:
+        print("Usage: test-translation-retry [text]")
+        print("\nOptions:")
+        print("  text           Optional text to translate (default: test message)")
+        print("\nExamples:")
+        print("  test-translation-retry")
+        print("  test-translation-retry 'こんにちは'")
+        return
+    
+    # Create a test message if not provided
+    text = " ".join(args) if args else "こんにちは、世界！"
+    
+    print(f"Testing translation retry mechanism with text: '{text}'")
+    print("Note: This test will make a real API call to Anthropic.")
+    print("If you encounter a rate limit error, the retry mechanism will be tested.")
+    print("Otherwise, a successful translation indicates the functionality is working correctly.")
+    
+    try:
+        # Call the real translation function
+        result = await translate(text)
+        print("✓ Translation successful:")
+        print(f"Translated text: {result}")
+    except TranslationError as e:
+        print(f"✗ Translation failed even with retry: {str(e)}")
+        
+    print("\nTesting complete. The retry mechanism will automatically handle rate limit errors (HTTP 429)")
+    print("by using exponential backoff and retrying up to 3 times by default.")
+
 async def main_cli():
     """Command-line interface for the Twitter to Telegram tool."""
     # List of available commands
@@ -869,6 +904,7 @@ async def main_cli():
         "test-error-logger": cmd_test_error_logger,
         "test-exception": cmd_test_exception,
         "show-config": cmd_show_config,
+        "test-translation-retry": cmd_test_translation_retry,
         # Add more commands here as needed
     }
     
@@ -883,6 +919,7 @@ async def main_cli():
         print("  send-admin-notification Send an admin notification to Telegram as Mai")
         print("  test-error-logger       Test the error logging system by sending a test message")
         print("  test-exception          Test the error logger with a simulated exception")
+        print("  test-translation-retry  Test the translation retry mechanism")
         print("  show-config             Display current configuration settings")
         # Add more command descriptions here
         print("\nFor help on a specific command, run:")

@@ -183,35 +183,45 @@ async def direct_search_and_forward(
                                     logger.error(f"Unexpected error during translation: {str(e)}")
                             
                             # Format and send the tweet (translated if available)
-                            if translated_text:
-                                # Create a copy of the tweet with translated text
-                                tweet_dict = tweet.dict()
-                                tweet_dict["text"] = translated_text
-                                translated_tweet = Tweet.parse_obj(tweet_dict)
-                                formatted_message = format_tweet_for_telegram(translated_tweet)
-                                
-                                response = await send_telegram_message(as_character, formatted_message)
-                                logger.info(f"Successfully forwarded translated tweet {tweet.id} to Telegram as {as_character.name}")
-                                
-                                # Store success result
+                            try:
+                                if translated_text:
+                                    # Create a copy of the tweet with translated text
+                                    tweet_dict = tweet.dict()
+                                    tweet_dict["text"] = translated_text
+                                    translated_tweet = Tweet.parse_obj(tweet_dict)
+                                    formatted_message = format_tweet_for_telegram(translated_tweet)
+                                    
+                                    response = await send_telegram_message(as_character, formatted_message)
+                                    logger.info(f"Successfully forwarded translated tweet {tweet.id} to Telegram as {as_character.name}")
+                                    
+                                    # Store success result
+                                    results.append({
+                                        "tweet_id": tweet.id,
+                                        "forwarded": True,
+                                        "character": as_character.name,
+                                        "translated": True
+                                    })
+                                else:
+                                    # Fall back to original if translation failed
+                                    formatted_message = format_tweet_for_telegram(tweet)
+                                    response = await send_telegram_message(as_character, formatted_message)
+                                    logger.info(f"Successfully forwarded original tweet {tweet.id} to Telegram as {as_character.name} (translation failed)")
+                                    
+                                    # Store success result
+                                    results.append({
+                                        "tweet_id": tweet.id,
+                                        "forwarded": True,
+                                        "character": as_character.name,
+                                        "translated": False
+                                    })
+                            except Exception as e:
+                                # Error is already logged in send_telegram_message
+                                # Error notification is already sent in send_telegram_message
+                                # Just add the result here
                                 results.append({
                                     "tweet_id": tweet.id,
-                                    "forwarded": True,
-                                    "character": as_character.name,
-                                    "translated": True
-                                })
-                            else:
-                                # Fall back to original if translation failed
-                                formatted_message = format_tweet_for_telegram(tweet)
-                                response = await send_telegram_message(as_character, formatted_message)
-                                logger.info(f"Successfully forwarded original tweet {tweet.id} to Telegram as {as_character.name} (translation failed)")
-                                
-                                # Store success result
-                                results.append({
-                                    "tweet_id": tweet.id,
-                                    "forwarded": True,
-                                    "character": as_character.name,
-                                    "translated": False
+                                    "forwarded": False,
+                                    "error": f"Failed to send to Telegram: {str(e)}"
                                 })
                         else:
                             logger.warning(f"No matching character found for tweet from @{tweet.author.userName if tweet.author else 'unknown'}")
