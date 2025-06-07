@@ -402,8 +402,12 @@ async def cmd_send_admin_notification(args):
         
         # Send the notification
         print(f"Sending admin notification as {mai_character.name}...")
-        await send_telegram_message(mai_character, formatted_message)
-        print("✓ Admin notification sent successfully")
+        try:
+            await send_telegram_message(mai_character, formatted_message)
+            print("✓ Admin notification sent successfully")
+        except Exception as e:
+            # Error notification is already handled in send_telegram_message
+            print(f"✗ Failed to send admin notification: {str(e)}")
         
     except Exception as e:
         print(f"Error sending admin notification: {str(e)}")
@@ -660,12 +664,16 @@ async def cmd_send_from_file(args):
                 else:
                     formatted_message = format_tweet_for_telegram(tweet)
                 
-                await send_telegram_message(tweet_character, formatted_message)
-                
-                if translated_text:
-                    print(f"  ✓ Sent translated tweet to Telegram as {character_name}")
-                else:
-                    print(f"  ✓ Sent original tweet to Telegram as {character_name}")
+                try:
+                    await send_telegram_message(tweet_character, formatted_message)
+                    
+                    if translated_text:
+                        print(f"  ✓ Sent translated tweet to Telegram as {character_name}")
+                    else:
+                        print(f"  ✓ Sent original tweet to Telegram as {character_name}")
+                except Exception as e:
+                    # Error notification is already sent by send_telegram_message
+                    print(f"  ✗ Failed to send tweet to Telegram: {str(e)}")
                     
                 successful += 1
                 
@@ -918,7 +926,7 @@ async def main_cli():
         print("  send-from-file          Send tweets from a JSON file to Telegram")
         print("  send-admin-notification Send an admin notification to Telegram as Mai")
         print("  test-error-logger       Test the error logging system by sending a test message")
-        print("  test-exception          Test the error logger with a simulated exception")
+        print("  test-exception          Test the error logger with a simulated exception") 
         print("  test-translation-retry  Test the translation retry mechanism")
         print("  show-config             Display current configuration settings")
         # Add more command descriptions here
