@@ -267,11 +267,12 @@ def get_expected_schema_version() -> str:
 async def check_schema_version() -> bool:
     """
     Check if the current database schema version matches the expected version.
+    Handles database queries directly to avoid transaction issues.
     
     Returns:
         bool: True if versions match, False otherwise
     """
-    current_version = await get_current_schema_version()
+    # Get the expected version from migration files first
     expected_version = get_expected_schema_version()
     
     if not expected_version:
@@ -279,17 +280,46 @@ async def check_schema_version() -> bool:
         logger.error("Please check that the alembic/versions directory contains valid migration files.")
         return False
     
-    if current_version is None:
-        logger.error("Database schema is not initialized. Please run migrations manually.")
-        return False
+    # Now check the current version directly, with proper transaction handling
+    try:
+        pool = await get_connection_pool()
+        current_version = None
+        
+        async with pool.acquire() as conn:
+            # First check if the table exists
+            async with conn.transaction():
+                table_exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = 'public' 
+                        AND table_name = 'alembic_version'
+                    )
+                """)
+                
+                if not table_exists:
+                    logger.warning("alembic_version table does not exist - database has not been initialized")
+                    return False
+            
+            # Then get the version
+            async with conn.transaction():
+                current_version = await conn.fetchval("SELECT version_num FROM alembic_version")
+        
+        # Compare versions
+        if current_version is None:
+            logger.error("Database schema is not initialized. Please run migrations manually.")
+            return False
+        
+        if current_version != expected_version:
+            logger.error(f"Database schema version mismatch! Current: {current_version}, Expected: {expected_version}")
+            logger.error("Please run migrations manually to update the database schema.")
+            return False
+        
+        logger.info(f"Database schema version is correct: {current_version}")
+        return True
     
-    if current_version != expected_version:
-        logger.error(f"Database schema version mismatch! Current: {current_version}, Expected: {expected_version}")
-        logger.error("Please run migrations manually to update the database schema.")
+    except Exception as e:
+        logger.error(f"Failed to check database schema version: {str(e)}")
         return False
-    
-    logger.info(f"Database schema version is correct: {current_version}")
-    return True
 
 
 def run_migrations():
@@ -545,6 +575,7 @@ async def get_translation_history_for_character(
 async def check_db_connection() -> Tuple[bool, Optional[str]]:
     """
     Check database connectivity by attempting a simple query.
+    Uses direct transaction handling to avoid issues.
     
     Returns:
         Tuple[bool, Optional[str]]: A tuple containing:
@@ -555,21 +586,14 @@ async def check_db_connection() -> Tuple[bool, Optional[str]]:
         # Get connection pool (or create if not exists)
         pool = await get_connection_pool()
         
-        # Import retry utility for consistent error handling
-        from .retry import retry_db_operation
-        
-        # Perform a simple query with retry to test the connection
+        # Perform a simple query with explicit transaction
         async with pool.acquire() as conn:
             # Use a simple query that works on both PostgreSQL and CockroachDB
             query = "SELECT 1 as connected"
             
-            # Wrap in retry for consistent handling
-            result = await retry_db_operation(
-                lambda connection: connection.fetchval(query),
-                conn,
-                max_retries=2,  # Fewer retries for health check to avoid long waits
-                initial_backoff=0.1  # Start with 100ms
-            )
+            # Use explicit transaction
+            async with conn.transaction():
+                result = await conn.fetchval(query)
             
             if result == 1:
                 logger.debug("Database health check passed")
