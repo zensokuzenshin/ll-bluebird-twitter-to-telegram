@@ -22,13 +22,11 @@ logger = logging.getLogger(__name__)
 _pool: Optional[asyncpg.Pool] = None
 
 async def _setup_connection(conn: asyncpg.Connection) -> None:
-        await conn.execute("SET application_name = 'lovelive-bluebird-twitter-to-telegram'")
-        # Use serializable isolation level - CockroachDB's default and recommended setting
-        await conn.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
-        # Disable implicit transactions for better performance with CockroachDB
-        await conn.execute("SET IMPLICIT_TRANSACTIONS = OFF")
-        # Set a statement timeout to prevent long-running queries
-        await conn.execute("SET statement_timeout = '30s'")
+    await conn.execute("SET application_name = 'lovelive-bluebird-twitter-to-telegram'")
+    # Use serializable isolation level - CockroachDB's default and recommended setting
+    await conn.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+    # Set a statement timeout to prevent long-running queries
+    await conn.execute("SET statement_timeout = '30s'")
 
 async def _create_connection_pool() -> asyncpg.Pool:
     """
