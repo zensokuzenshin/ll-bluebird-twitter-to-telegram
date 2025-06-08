@@ -21,6 +21,8 @@
         devShell = pkgs.mkShell {
           buildInputs = with pkgs; [
             python313Full
+            black
+            ruff
           ];
         };
       }

@@ -13,8 +13,9 @@ _characters: List[str] = [
     "Yukuri",
     "Aurora",
     "Midori",
-    "Shion"
+    "Shion",
 ]
+
 
 class _Characters:
     _character_config: Dict[str, Character] = {}
@@ -34,20 +35,29 @@ class _Characters:
         else:
             return self._character_config[item]
 
+
 characters = _Characters()
 
 for character in _characters:
-    twitter_handle = os.environ.get(f"Character_{character}_Twitter_Handle".upper(), None)
+    twitter_handle = os.environ.get(
+        f"Character_{character}_Twitter_Handle".upper(), None
+    )
     if twitter_handle is None:
         raise ValueError(f"Twitter Handle of {character} is not defined")
-    telegram_bot_token = os.environ.get(f"Character_{character}_Telegram_Bot_Token".upper(), None)
+    telegram_bot_token = os.environ.get(
+        f"Character_{character}_Telegram_Bot_Token".upper(), None
+    )
     if telegram_bot_token is None:
         raise ValueError(f"Telegram Bot Token of {character} is not defined")
 
-    setattr(characters, character, Character(
-        name=character,
-        twitter_handle=twitter_handle,
-        telegram_bot_token=telegram_bot_token
-    ))
+    setattr(
+        characters,
+        character,
+        Character(
+            name=character,
+            twitter_handle=twitter_handle,
+            telegram_bot_token=telegram_bot_token,
+        ),
+    )
 
 __all__ = ["characters"]
