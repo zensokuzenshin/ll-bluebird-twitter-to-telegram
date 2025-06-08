@@ -355,9 +355,47 @@ async def receive_webhook(payload: Dict[str, Any], request: Request):
 
 @app.get("/health")
 async def health_check(request: Request):
-    """Health check endpoint."""
+    """
+    Health check endpoint that verifies service status and database connectivity.
+    Returns a 200 OK response if the service is running and can connect to the database.
+    Returns a 503 Service Unavailable if the database connection fails.
+    """
     client_ip = request.headers.get("x-envoy-external-address", request.client.host)
-    return {"status": "ok", "client_ip": client_ip}
+    
+    # Basic response with service status
+    response = {
+        "status": "ok",
+        "client_ip": client_ip,
+        "components": {
+            "service": {
+                "status": "ok"
+            }
+        }
+    }
+    
+    # Check database connectivity
+    from db import check_db_connection
+    db_healthy, db_error = await check_db_connection()
+    
+    # Add database status to response
+    response["components"]["database"] = {
+        "status": "ok" if db_healthy else "error",
+    }
+    
+    # Include error message if there was one
+    if not db_healthy:
+        response["components"]["database"]["error"] = db_error
+        # Set overall status to error if database is not healthy
+        response["status"] = "error"
+        # Return 503 Service Unavailable to indicate service degradation
+        from fastapi import status
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=response
+        )
+    
+    return response
 
 
 if __name__ == "__main__":

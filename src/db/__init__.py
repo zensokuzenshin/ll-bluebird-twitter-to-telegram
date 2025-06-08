@@ -101,6 +101,7 @@ async def _check_table_exists(
     """
     Helper function to check if a table exists.
     This function is used by get_current_schema_version and is designed to be retried.
+    Uses an explicit transaction to avoid "not in a transaction" errors.
 
     Args:
         conn: The database connection to use
@@ -109,19 +110,22 @@ async def _check_table_exists(
     Returns:
         bool: True if the table exists, False otherwise
     """
-    return await conn.fetchval(f"""
-        SELECT EXISTS (
-            SELECT FROM information_schema.tables 
-            WHERE table_schema = 'public' 
-            AND table_name = '{table_name}'
-        )
-    """)
+    # Start an explicit transaction to avoid "not in a transaction" errors
+    async with conn.transaction():
+        return await conn.fetchval(f"""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name = '{table_name}'
+            )
+        """)
 
 
 async def _fetch_schema_version(conn: asyncpg.Connection) -> Optional[str]:
     """
     Helper function to fetch the current schema version.
     This function is used by get_current_schema_version and is designed to be retried.
+    Uses an explicit transaction to avoid "not in a transaction" errors.
 
     Args:
         conn: The database connection to use
@@ -129,7 +133,9 @@ async def _fetch_schema_version(conn: asyncpg.Connection) -> Optional[str]:
     Returns:
         Optional[str]: The current schema version
     """
-    return await conn.fetchval("SELECT version_num FROM alembic_version")
+    # Start an explicit transaction to avoid "not in a transaction" errors
+    async with conn.transaction():
+        return await conn.fetchval("SELECT version_num FROM alembic_version")
 
 
 async def get_current_schema_version() -> Optional[str]:
@@ -199,7 +205,8 @@ def get_expected_schema_version() -> str:
     filename_pattern = re.compile(r"^(\d+)_.*\.py$")
     
     # Regular expression to extract revision IDs from migration files
-    revision_pattern = re.compile(r"revision\s*=\s*['\"]([0-9a-f]+)['\"]")
+    # This pattern matches both "revision = '123abc'" and "revision: str = '123abc'" formats
+    revision_pattern = re.compile(r"revision(?:\s*:\s*\w+)?\s*=\s*['\"]([0-9a-f]+)['\"]")
     
     # Dictionary to store sequence numbers, file paths, and revision IDs
     migrations = {}
@@ -220,12 +227,21 @@ def get_expected_schema_version() -> str:
             # Extract revision ID from file content
             with open(file_path, 'r') as f:
                 content = f.read()
-                revision_match = revision_pattern.search(content)
-                if not revision_match:
-                    logger.warning(f"Could not find revision ID in {filename}")
-                    continue
                 
-                revision_id = revision_match.group(1)
+                # Try to match revision ID in different formats
+                revision_match = revision_pattern.search(content)
+                
+                # If not found, also try to find it in a comment line like "Revision ID: 123abc"
+                if not revision_match:
+                    revision_id_comment = re.search(r"Revision ID:\s*([0-9a-f]+)", content)
+                    if revision_id_comment:
+                        revision_id = revision_id_comment.group(1)
+                        logger.info(f"Found revision ID in comment: {revision_id}")
+                    else:
+                        logger.warning(f"Could not find revision ID in {filename}")
+                        continue
+                else:
+                    revision_id = revision_match.group(1)
                 migrations[seq_num] = {
                     'file_path': file_path,
                     'revision_id': revision_id,
@@ -524,3 +540,44 @@ async def get_translation_history_for_character(
         )
 
         return [dict(row) for row in rows]
+
+
+async def check_db_connection() -> Tuple[bool, Optional[str]]:
+    """
+    Check database connectivity by attempting a simple query.
+    
+    Returns:
+        Tuple[bool, Optional[str]]: A tuple containing:
+            - A boolean indicating if the connection is healthy
+            - An optional error message if the connection is not healthy
+    """
+    try:
+        # Get connection pool (or create if not exists)
+        pool = await get_connection_pool()
+        
+        # Import retry utility for consistent error handling
+        from .retry import retry_db_operation
+        
+        # Perform a simple query with retry to test the connection
+        async with pool.acquire() as conn:
+            # Use a simple query that works on both PostgreSQL and CockroachDB
+            query = "SELECT 1 as connected"
+            
+            # Wrap in retry for consistent handling
+            result = await retry_db_operation(
+                lambda connection: connection.fetchval(query),
+                conn,
+                max_retries=2,  # Fewer retries for health check to avoid long waits
+                initial_backoff=0.1  # Start with 100ms
+            )
+            
+            if result == 1:
+                logger.debug("Database health check passed")
+                return True, None
+            else:
+                logger.warning(f"Database health check failed: unexpected result {result}")
+                return False, f"Unexpected result: {result}"
+                
+    except Exception as e:
+        logger.error(f"Database health check failed: {str(e)}")
+        return False, str(e)
