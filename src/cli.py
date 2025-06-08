@@ -712,6 +712,7 @@ async def cmd_show_config(args):
         args: Command-line arguments after the subcommand
     """
     import config
+    from translate import ANTHROPIC_AVAILABLE, OPENAI_AVAILABLE
     
     # Check if help is requested
     if args and args[0] in ['-h', '--help']:
@@ -726,8 +727,14 @@ async def cmd_show_config(args):
     
     # Translation settings
     print("\nTranslation:")
-    print(f"  Model: {config.common.TRANSLATION_MODEL}")
-    print(f"  Default model: {config.common.DEFAULT_TRANSLATION_MODEL}")
+    print("  Configured LLM Providers (in order of preference):")
+    for i, model in enumerate(config.common.TRANSLATION_MODELS):
+        print(f"    {i+1}. {model}")
+    
+    # Legacy translation model setting
+    print("\n  Legacy Setting (backward compatibility):")
+    print(f"  TRANSLATION_MODEL: {config.common.TRANSLATION_MODEL}")
+    print(f"  DEFAULT_TRANSLATION_MODEL: {config.common.DEFAULT_TRANSLATION_MODEL}")
     print(f"  Using custom model: {'Yes' if config.common.TRANSLATION_MODEL != config.common.DEFAULT_TRANSLATION_MODEL else 'No'}")
     
     # API endpoints
@@ -738,6 +745,7 @@ async def cmd_show_config(args):
     # Check environment variables (without showing full values)
     print("\nAPI Keys (Status):")
     print(f"  ANTHROPIC_API_KEY: {'Configured' if config.common.ANTHROPIC_API_KEY else 'Not set'}")
+    print(f"  OPENAI_API_KEY: {'Configured' if config.common.OPENAI_API_KEY else 'Not set'}")
     print(f"  TWITTER_API_KEY: {'Configured' if config.common.TWITTER_API_KEY else 'Not set'}")
     
     # Telegram settings
@@ -749,8 +757,16 @@ async def cmd_show_config(args):
     for name in sorted(config.characters._character_config.keys()):
         char = config.characters._character_config[name]
         print(f"  - {name.capitalize()} (@{char.twitter_handle})")
-        
-    print("\nNote: To change the translation model, set the TRANSLATION_MODEL environment variable.")
+    
+    # LLM Provider availability
+    print("\nLLM Provider Support:")
+    print(f"  Anthropic: {'Available' if ANTHROPIC_AVAILABLE else 'Not available - Install with pip install anthropic'}")
+    print(f"  OpenAI: {'Available' if OPENAI_AVAILABLE else 'Not available - Install with pip install openai'}")
+    
+    print("\nNote: To configure multiple LLM providers, set the TRANSLATION_MODELS environment variable.")
+    print("Format: 'provider1:model1,provider2:model2,...'")
+    print("Example: 'anthropic:claude-3-7-sonnet-20250219,openai:gpt-4o'")
+    print("Translation will try each provider from left to right until successful.")
 
 
 
@@ -886,7 +902,7 @@ async def cmd_test_translation_retry(args):
     text = " ".join(args) if args else "こんにちは、世界！"
     
     print(f"Testing translation retry mechanism with text: '{text}'")
-    print("Note: This test will make a real API call to Anthropic.")
+    print("Note: This test will make a real API call to the configured LLM providers.")
     print("If you encounter a rate limit error, the retry mechanism will be tested.")
     print("Otherwise, a successful translation indicates the functionality is working correctly.")
     
@@ -901,6 +917,275 @@ async def cmd_test_translation_retry(args):
     print("\nTesting complete. The retry mechanism will automatically handle rate limit errors (HTTP 429)")
     print("by using exponential backoff and retrying up to 3 times by default.")
 
+
+async def cmd_test_llm_providers(args):
+    """
+    Test translation with different LLM providers.
+    """
+    from translate import translate, TranslationError, LLMProvider
+    import config
+    import random
+    from tweet import Tweet, search_tweets
+    
+    # Check if help is requested
+    if args and args[0] in ['-h', '--help']:
+        print("Usage: test-llm-providers [options] [text]")
+        print("\nOptions:")
+        print("  --model=PROVIDER:MODEL   Specific model to test (e.g., 'anthropic:claude-3-7-sonnet-20250219')")
+        print("  --all                    Test all available models configured in TRANSLATION_MODELS")
+        print("  --api                    Fetch tweets from Twitter API instead of using a test message")
+        print("  --limit=N                Number of tweets to fetch from API (default: 3, max: 10)")
+        print("  --query=QUERY            Custom Twitter search query (default: searches for configured accounts)")
+        print("  text                     Optional text to translate (default: test message)")
+        print("\nExamples:")
+        print("  test-llm-providers")
+        print("  test-llm-providers --model=anthropic:claude-3-7-sonnet-20250219")
+        print("  test-llm-providers --api --limit=5")
+        print("  test-llm-providers --api --query=\"from:takahashipolka\"")
+        print("  test-llm-providers --all --api")
+        print("\nCurrently configured models:")
+        for i, model in enumerate(config.common.TRANSLATION_MODELS):
+            print(f"  {i+1}. {model}")
+        return
+    
+    # Parse arguments
+    test_all = False
+    model_spec = None
+    use_api = False
+    api_limit = 3
+    api_query = None
+    text_args = []
+    
+    for arg in args:
+        if arg == "--all":
+            test_all = True
+        elif arg == "--api":
+            use_api = True
+        elif arg.startswith("--model="):
+            model_spec = arg.split("=", 1)[1]
+        elif arg.startswith("--limit="):
+            try:
+                api_limit = int(arg.split("=", 1)[1])
+                # Enforce reasonable limits
+                if api_limit < 1:
+                    api_limit = 1
+                elif api_limit > 10:
+                    api_limit = 10
+            except ValueError:
+                print(f"Invalid limit value: {arg.split('=', 1)[1]}. Using default: 3")
+                api_limit = 3
+        elif arg.startswith("--query="):
+            api_query = arg.split("=", 1)[1]
+        else:
+            text_args.append(arg)
+    
+    # Determine the text to translate
+    texts_to_translate = []
+    
+    if use_api:
+        # Fetch tweets from Twitter API
+        print("Fetching tweets from Twitter API...")
+        
+        # Ensure API key is configured
+        if not config.common.TWITTER_API_KEY:
+            print("Error: TWITTER_API_KEY is not configured. Set it in your environment variables.")
+            return
+        
+        # Build query
+        if not api_query:
+            # Default: search for tweets from all configured characters
+            api_query = " OR ".join(f"from:{char.twitter_handle}" for char in config.characters._character_config.values())
+        
+        print(f"Using query: {api_query}")
+        
+        try:
+            # Search for tweets
+            search_results = await search_tweets(api_query, "Latest", "")
+            tweets = search_results.get("tweets", [])
+            
+            if not tweets:
+                print("No tweets found. Try a different query or check your API key.")
+                return
+            
+            print(f"Found {len(tweets)} tweets. Selecting up to {api_limit} for testing.")
+            
+            # If we have more tweets than the limit, select random ones
+            if len(tweets) > api_limit:
+                # Choose random tweets
+                selected_tweets = random.sample(tweets, api_limit)
+            else:
+                selected_tweets = tweets[:api_limit]
+            
+            # Parse tweets and extract text
+            for i, tweet_data in enumerate(selected_tweets):
+                try:
+                    tweet = Tweet.parse_obj(tweet_data)
+                    if tweet.text:
+                        tweet_author = f"@{tweet.author.userName}" if tweet.author and tweet.author.userName else "unknown"
+                        texts_to_translate.append({
+                            "text": tweet.text,
+                            "source": f"Tweet from {tweet_author}",
+                            "id": tweet.id
+                        })
+                except Exception as e:
+                    print(f"Error parsing tweet {i+1}: {str(e)}")
+        except Exception as e:
+            print(f"Error fetching tweets: {str(e)}")
+            return
+    
+    # If no texts were obtained from API or API option wasn't used, use the provided text or default
+    if not texts_to_translate:
+        default_text = "こんにちは、世界！"
+        text = " ".join(text_args) if text_args else default_text
+        texts_to_translate.append({
+            "text": text,
+            "source": "Manual input" if text_args else "Default test message",
+            "id": "test-message"
+        })
+    
+    # Determine which models to test
+    models_to_test = []
+    
+    if test_all:
+        models_to_test = config.common.TRANSLATION_MODELS
+        print(f"Testing all {len(models_to_test)} configured LLM providers...")
+    elif model_spec:
+        models_to_test = [model_spec]
+        print(f"Testing specific model: {model_spec}")
+    else:
+        # Default: test the first configured model
+        if config.common.TRANSLATION_MODELS:
+            models_to_test = [config.common.TRANSLATION_MODELS[0]]
+            print(f"Testing first configured model: {models_to_test[0]}")
+        else:
+            print("No models configured. Set TRANSLATION_MODELS environment variable.")
+            return
+    
+    # Initialize results tracking
+    results = []
+    
+    # Test each text with each model
+    for text_idx, text_info in enumerate(texts_to_translate):
+        text = text_info["text"]
+        source = text_info["source"]
+        text_id = text_info["id"]
+        
+        print(f"\n[{text_idx+1}/{len(texts_to_translate)}] Testing text from {source}")
+        print(f"Input text ({len(text)} chars): '{text}'")
+        
+        text_results = []
+        
+        for i, model in enumerate(models_to_test):
+            print(f"\n  {i+1}. Testing {model}:")
+            
+            # Parse provider and model name
+            if ":" not in model:
+                print(f"    ✗ Invalid model specification '{model}'. Must be in 'provider:model' format.")
+                continue
+                
+            provider_name, model_name = model.split(":", 1)
+            
+            # Create a temporary model list with just this model
+            temp_models = [model]
+            
+            # Set the model list temporarily just for this test
+            original_models = config.common.TRANSLATION_MODELS
+            config.common.TRANSLATION_MODELS = temp_models
+            
+            try:
+                # Call the translation function
+                start_time = asyncio.get_event_loop().time()
+                result = await translate(text)
+                end_time = asyncio.get_event_loop().time()
+                
+                # Calculate execution time
+                execution_time = end_time - start_time
+                
+                print(f"    ✓ Translation successful ({execution_time:.2f}s):")
+                print(f"    Result ({len(result)} chars): '{result}'")
+                
+                # Add to results
+                text_results.append({
+                    "model": model,
+                    "success": True,
+                    "time": execution_time,
+                    "result": result,
+                    "error": None
+                })
+                
+            except TranslationError as e:
+                print(f"    ✗ Translation failed: {str(e)}")
+                text_results.append({
+                    "model": model,
+                    "success": False,
+                    "time": None,
+                    "result": None,
+                    "error": str(e)
+                })
+            finally:
+                # Restore the original model list
+                config.common.TRANSLATION_MODELS = original_models
+        
+        # Add the results for this text
+        results.append({
+            "text": text,
+            "source": source,
+            "id": text_id,
+            "results": text_results
+        })
+    
+    # Print summary report
+    print("\n" + "="*50)
+    print("TRANSLATION TEST SUMMARY")
+    print("="*50)
+    
+    # Calculate overall statistics
+    total_tests = len(texts_to_translate) * len(models_to_test)
+    successful_tests = sum(1 for text_result in results for model_result in text_result["results"] if model_result["success"])
+    
+    print(f"\nOverall success rate: {successful_tests}/{total_tests} ({successful_tests/total_tests*100:.1f}%)")
+    
+    # Print per-model statistics
+    print("\nPer-model performance:")
+    
+    model_stats = {}
+    for model in models_to_test:
+        model_stats[model] = {
+            "total": 0,
+            "success": 0,
+            "total_time": 0,
+            "count_with_time": 0
+        }
+    
+    for text_result in results:
+        for model_result in text_result["results"]:
+            model = model_result["model"]
+            model_stats[model]["total"] += 1
+            
+            if model_result["success"]:
+                model_stats[model]["success"] += 1
+                
+                if model_result["time"] is not None:
+                    model_stats[model]["total_time"] += model_result["time"]
+                    model_stats[model]["count_with_time"] += 1
+    
+    # Display stats for each model
+    for model, stats in model_stats.items():
+        success_rate = stats["success"] / stats["total"] * 100 if stats["total"] > 0 else 0
+        avg_time = stats["total_time"] / stats["count_with_time"] if stats["count_with_time"] > 0 else 0
+        
+        print(f"  {model}:")
+        print(f"    Success rate: {stats['success']}/{stats['total']} ({success_rate:.1f}%)")
+        
+        if stats["count_with_time"] > 0:
+            print(f"    Average time: {avg_time:.2f}s")
+    
+    print("\nTest complete.")
+    print("\nNote: You can configure multiple LLM providers using the TRANSLATION_MODELS environment variable.")
+    print("Format: 'provider1:model1,provider2:model2,...'")
+    print("Example: 'anthropic:claude-3-7-sonnet-20250219,openai:gpt-4o'")
+    print("Translation will try each provider from left to right until successful.")
+
 async def main_cli():
     """Command-line interface for the Twitter to Telegram tool."""
     # List of available commands
@@ -913,6 +1198,7 @@ async def main_cli():
         "test-exception": cmd_test_exception,
         "show-config": cmd_show_config,
         "test-translation-retry": cmd_test_translation_retry,
+        "test-llm-providers": cmd_test_llm_providers,
         # Add more commands here as needed
     }
     
@@ -928,6 +1214,7 @@ async def main_cli():
         print("  test-error-logger       Test the error logging system by sending a test message")
         print("  test-exception          Test the error logger with a simulated exception") 
         print("  test-translation-retry  Test the translation retry mechanism")
+        print("  test-llm-providers      Test different LLM providers for translation")
         print("  show-config             Display current configuration settings")
         # Add more command descriptions here
         print("\nFor help on a specific command, run:")
