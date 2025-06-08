@@ -23,8 +23,6 @@ _pool: Optional[asyncpg.Pool] = None
 
 async def _setup_connection(conn: asyncpg.Connection) -> None:
     await conn.execute("SET application_name = 'lovelive-bluebird-twitter-to-telegram'")
-    # Use serializable isolation level - CockroachDB's default and recommended setting
-    await conn.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
     # Set a statement timeout to prevent long-running queries
     await conn.execute("SET statement_timeout = '30s'")
 
