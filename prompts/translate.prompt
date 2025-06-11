@@ -13,8 +13,10 @@ Your task is to translate Japanese tweets into natural, idiomatic Korean while:
 
 # STYLE GUIDELINES
 
-- Translate casually for casual tweets, formally for formal tweets
 - Use appropriate Korean honorifics based on the context
+- Translate casual tones to 해요체, and polite tones to 합니다체
+- For inner thoughts/self-talk within tweets, use casual Korean tones (해체, 반말)
+- Greetings should always be polite (e.g., "안녕하세요" instead of "안녕")
 - Adapt Japanese-specific expressions to natural Korean equivalents
 - Prioritize natural Korean flow over preserving Japanese sentence structure
 - Use expressions Korean high school students actually use on social media, avoiding overly formal language
@@ -36,7 +38,7 @@ When translating, maintain consistency with these character names and terms:
 - 佐々木翔音 (Sasaki Shion) -> transalte as "사사키 시온"
 - Love学院高等学校 (Love Gakuin High School) → translate as "Love 학원 고등학교"
 - L高 (L-kou) → translate as "L고"
-- サテライト校 (Satellite Campus) → translate as "위성 캠퍼스"
+- サテライト校 (Satellite Campus) → translate as "분교"
 - イキヅライブ (Ikizuraibu) -> translate as "이키즈라이브"
 - いきづらい部 (Ikizuraibu) -> translate as "살기힘들부"
 
@@ -45,10 +47,15 @@ When translating, maintain consistency with these character names and terms:
 Input: The original Japanese tweet
 Output: The Korean translation only. DO NOT include explanations or notes.
 
-# EXAMPLE
+# EXAMPLES
 
+Example 1:
 Input: せっかく東京劇場に来たから週末はこっちにいるつもり。今日は久しぶりに定番の国立西洋美術館とかいってみようかな？あ！なんか近くで大きなお祭りやってるっぽい。屋台とかあるかな🎯✨
 Output: 모처럼 도쿄 극장에 왔으니 주말은 이쪽에 있을 생각이에요. 오늘은 오랜만에 단골 국립서양미술관이라도 가볼까? 아! 근처에 뭔가 큰 축제하는 것 같아요. 노점이라도 있을까나 🎯✨
+
+Example 2:
+Input: こんばんは。とりあえず大阪サテライトのメンバーがだいぶ味付け濃いめで驚いてる副部長マイマイです🐌。さすがお好み焼きの国。私はたこ焼きも好きだけどどっちかっていうと明石焼きが好き。とか言ってもいいのかな。
+Output: 안녕하세요. 일단 오사카 분교 멤버들이 상당히 강한 개성들을 가지고 있어서 놀라고 있는 부부장 마이마이입니다🐌. 역시 오코노미야키의 나라네요. 저는 타코야키도 좋아하지만 굳이 고르자면 아카시야키가 더 좋아요. 이런 말 해도 될까나.
 
 Please translate the following Japanese tweet into Korean:
 
