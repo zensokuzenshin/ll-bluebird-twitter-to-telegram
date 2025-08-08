@@ -252,7 +252,7 @@ class OpenAIProvider(LLMProvider):
 
                 completion = await client.chat.completions.create(
                     model=self.model_name,
-                    max_tokens=1024,
+                    max_completion_tokens=1024,
                     messages=[{"role": "user", "content": prompt}],
                 )
 
