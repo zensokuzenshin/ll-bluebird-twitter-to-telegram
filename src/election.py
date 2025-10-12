@@ -35,7 +35,7 @@ async def start_election():
         await on_started_leading()
         return
 
-    await kube_config.load_kube_config()
+    await kube_config.load_config()
     async with client.ApiClient() as api:
         election_config = electionconfig.Config(
             ConfigMapLock(
