@@ -1,62 +1,22 @@
-from contextlib import asynccontextmanager
+import asyncio
+import os
+import sys
+from typing import List
 
-from fastapi import FastAPI, Request
-from typing import Dict, Any
-import json
 import uvicorn
-import datetime
-from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi import FastAPI, Request, Response
 
-from common import logger
-from tweet import Tweet, format_tweet_for_telegram
-from telegram import send_telegram_message
-from translate import translate, TranslationError
 import config
-from db import (
-    get_connection_pool,
-    close_connection_pool,
-    get_telegram_message_id_for_tweet,
-)
-
-@asynccontextmanager
-async def lifespan(_: FastAPI):
-    """Initialize the database connection pool on startup and verify schema version."""
-    try:
-        logger.info("Initializing database connection pool...")
-
-        # Initialize connection pool
-        await get_connection_pool()
-        logger.info("Database connection pool initialized successfully")
-
-        # Check database schema version - do NOT run migrations automatically
-        from db import check_schema_version
-
-        schema_valid = await check_schema_version()
-        if not schema_valid:
-            logger.error("Database schema version mismatch - shutting down server")
-            logger.error("Please run migrations manually with: python src/cli.py migrate-db")
-            # Exit with error code to indicate that the server should not start
-            import sys
-            sys.exit(1)
-
-        logger.info("Database schema version verified successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize database: {str(e)}")
-        # Exit with error code
-        import sys
-        logger.error("Database initialization failed - shutting down server")
-        sys.exit(1)
-
-    yield
-
-    """Close the database connection pool on shutdown."""
-    logger.info("Closing database connection pool...")
-    await close_connection_pool()
-    logger.info("Database connection pool closed")
-
+import db
+import election
+from common import logger
+from telegram import send_telegram_message
+from translate.types.translated_tweet import TranslatedTweet
+from tweet import Tweet, TwitterAPI
 
 # Create FastAPI app instance
-app = FastAPI(title="Twitter to Telegram Forwarder", lifespan=lifespan)
+app = FastAPI(title="Twitter to Telegram Forwarder")
+
 
 # Middleware to handle the x-envoy-external-address header
 @app.middleware("http")
@@ -82,328 +42,109 @@ async def envoy_external_address_middleware(request: Request, call_next):
 
     return await call_next(request)
 
-@app.post("/webhook", status_code=200)
-async def receive_webhook(payload: Dict[str, Any], request: Request):
-    """
-    Webhook endpoint to receive Twitter events and forward them to Telegram.
-    """
-    # Get client IP - prefer x-envoy-external-address header if it exists
-    client_ip = request.headers.get("x-envoy-external-address", request.client.host)
-    logger.info("Received webhook payload")
-
-    # Log the full payload for debugging
-    logger.info(f"Full payload JSON: {json.dumps(payload, indent=2)}")
-
-    # Log root level keys to understand structure
-    logger.info(f"Payload keys at root level: {list(payload.keys())}")
-
-    # Check if this is a test webhook event
-    if payload.get("event_type") == "test_webhook_url":
-        logger.info("Received test webhook verification event")
-        return {"status": "success", "message": "Test webhook received successfully"}
-
-    # Check for tweets array directly in the payload
-    tweets_list = []
-
-    # Try to locate tweets in the payload
-    if "tweets" in payload and isinstance(payload["tweets"], list):
-        tweets_list = payload["tweets"]
-        logger.info(f"Found {len(tweets_list)} tweets in 'tweets' field")
-
-    # If no tweets found, look in other common locations
-    if not tweets_list:
-        for field in ["data", "statuses", "results"]:
-            if field in payload and isinstance(payload[field], list):
-                tweets_list = payload[field]
-                logger.info(
-                    f"Found {len(tweets_list)} potential tweets in '{field}' field"
-                )
-                break
-
-    # If still no tweets, check if the payload itself is a tweet or array of tweets
-    if not tweets_list and "id" in payload and "text" in payload:
-        # The payload itself might be a tweet
-        tweets_list = [payload]
-        logger.info("The payload itself appears to be a single tweet")
-
-    if not tweets_list:
-        logger.warning("No tweets found in payload")
-        return {"status": "skipped", "reason": "No tweets found in payload"}
-
-    # Sort tweets by date (oldest first) before processing
-    try:
-        logger.info("Sorting tweets by date (oldest first)...")
-
-        # Create temporary list with (tweet, date) tuples for sorting
-        dated_tweets = []
-        for tweet_data in tweets_list:
-            if not isinstance(tweet_data, dict):
-                # Skip non-dictionary entries
-                dated_tweets.append((tweet_data, None))
-                continue
-
-            parsed_date = None
-            # Try to get parsed date from tweet
-            if "parsed_date" in tweet_data:
-                parsed_date = tweet_data["parsed_date"]
-            # Otherwise try to parse from createdAt
-            elif "createdAt" in tweet_data:
-                try:
-                    parsed_date = datetime.datetime.strptime(
-                        tweet_data["createdAt"], "%a %b %d %H:%M:%S %z %Y"
-                    )
-                except (ValueError, TypeError):
-                    # If parsing fails, use None (will end up at the end)
-                    pass
-            dated_tweets.append((tweet_data, parsed_date))
-
-        # Sort by date, with None dates at the end
-        # The tuple sort key: (is_none, date_value) ensures None values go last
-        sorted_tweets = [
-            t[0] for t in sorted(dated_tweets, key=lambda x: (x[1] is None, x[1]))
-        ]
-        tweets_list = sorted_tweets
-        logger.info(f"Sorted {len(tweets_list)} tweets by date (oldest first)")
-    except Exception as e:
-        logger.warning(f"Failed to sort tweets by date: {str(e)}")
-        logger.warning("Will process tweets in their original order")
-
-    # Process each tweet
-    processed_tweets = []
-
-    for i, tweet_data in enumerate(tweets_list):
-        if not isinstance(tweet_data, dict):
-            logger.warning(f"Tweet {i+1} is not a dictionary, skipping")
-            continue
-
-        # Log the keys in this tweet object
-        logger.info(f"Tweet {i+1} keys: {list(tweet_data.keys())}")
-
-        try:
-            # Parse the tweet data
-            tweet = Tweet.parse_obj(tweet_data)
-            logger.info(f"Tweet {i+1} text: {tweet.text or 'No text available'}")
-
-            # Extract author information for matching with character
-            if tweet.author and tweet.author.userName:
-                author_username = tweet.author.userName.lower()
-                logger.info(f"Author: {tweet.author.name} (@{author_username})")
-
-                # Try to find matching character for the tweet
-                try:
-                    character = config.characters[author_username]
-                    logger.info(f"Found matching character: {character.name}")
-
-                    # Always translate the tweet
-                    original_text = tweet.text or ""
-                    translated_text = None
-
-                    if original_text:
-                        try:
-                            logger.info("Translating tweet to Korean...")
-                            translated_text = await translate(original_text)
-                            logger.info("Translation successful")
-                        except TranslationError as e:
-                            logger.error(f"Translation error: {str(e)}")
-                        except Exception as e:
-                            logger.error(
-                                f"Unexpected error during translation: {str(e)}"
-                            )
-
-                    # Check if this is a reply to another tweet
-                    reply_to_message_id = None
-                    if tweet.inReplyToId:
-                        logger.info(
-                            f"Tweet {tweet.id} is a reply to tweet {tweet.inReplyToId}"
-                        )
-                        # Try to find the Telegram message ID for the parent tweet
-                        try:
-                            parent_telegram_message_id = (
-                                await get_telegram_message_id_for_tweet(
-                                    tweet.inReplyToId
-                                )
-                            )
-                            if parent_telegram_message_id:
-                                logger.info(
-                                    f"Found parent Telegram message ID: {parent_telegram_message_id}"
-                                )
-                                reply_to_message_id = parent_telegram_message_id
-                            else:
-                                logger.info(
-                                    f"No Telegram message found for parent tweet {tweet.inReplyToId}"
-                                )
-                        except Exception as e:
-                            logger.error(f"Error looking up parent tweet: {str(e)}")
-
-                    # Get the tweet URL (original or constructed)
-                    tweet_url = (
-                        tweet.twitterUrl
-                        or tweet.url
-                        or f"https://twitter.com/{author_username}/status/{tweet.id}"
-                    )
-
-                    # Format and forward the tweet (translated if available)
-                    try:
-                        if translated_text:
-                            # Create a copy of the tweet with translated text
-                            tweet_dict = tweet.dict()
-                            tweet_dict["text"] = translated_text
-                            translated_tweet = Tweet.parse_obj(tweet_dict)
-                            formatted_message = format_tweet_for_telegram(
-                                translated_tweet
-                            )
-
-                            # Send message with full context for database storage
-                            await send_telegram_message(
-                                as_character=character,
-                                message=formatted_message,
-                                tweet_id=tweet.id,
-                                tweet_url=tweet_url,
-                                original_text=original_text,
-                                translated_text=translated_text,
-                                parent_tweet_id=tweet.inReplyToId,
-                                llm_provider=(
-                                    config.common.TRANSLATION_MODELS[0]
-                                    if config.common.TRANSLATION_MODELS
-                                    else None
-                                ),
-                                reply_to_message_id=reply_to_message_id,
-                            )
-
-                            processed_tweets.append(
-                                {
-                                    "id": tweet.id,
-                                    "forwarded": True,
-                                    "character": character.name,
-                                    "translated": True,
-                                    "is_reply": bool(reply_to_message_id),
-                                }
-                            )
-                            logger.info(
-                                f"Successfully forwarded translated tweet {tweet.id} as {character.name}"
-                            )
-                        else:
-                            # Fall back to original if translation failed
-                            formatted_message = format_tweet_for_telegram(tweet)
-
-                            # Send message with full context for database storage
-                            await send_telegram_message(
-                                as_character=character,
-                                message=formatted_message,
-                                tweet_id=tweet.id,
-                                tweet_url=tweet_url,
-                                original_text=original_text,
-                                translated_text=original_text,  # Use original as translation failed
-                                parent_tweet_id=tweet.inReplyToId,
-                                reply_to_message_id=reply_to_message_id,
-                            )
-
-                            processed_tweets.append(
-                                {
-                                    "id": tweet.id,
-                                    "forwarded": True,
-                                    "character": character.name,
-                                    "translated": False,
-                                    "is_reply": bool(reply_to_message_id),
-                                }
-                            )
-                            logger.info(
-                                f"Successfully forwarded original tweet {tweet.id} as {character.name} (translation failed)"
-                            )
-                    except Exception as e:
-                        # Error and user notification are already handled in send_telegram_message
-                        logger.error(f"Error sending tweet to Telegram: {str(e)}")
-                        processed_tweets.append(
-                            {
-                                "id": tweet.id,
-                                "forwarded": False,
-                                "character": character.name,
-                                "error": "Message delivery failed",
-                            }
-                        )
-                except (KeyError, AttributeError):
-                    logger.warning(
-                        f"No matching character found for @{author_username}"
-                    )
-                    processed_tweets.append(
-                        {
-                            "id": tweet.id,
-                            "forwarded": False,
-                            "reason": "No matching character found",
-                        }
-                    )
-            else:
-                logger.warning(f"Tweet {i+1} has no author or username")
-                processed_tweets.append(
-                    {
-                        "id": tweet.id if tweet.id else f"unknown-{i}",
-                        "forwarded": False,
-                        "reason": "Missing author information",
-                    }
-                )
-
-        except Exception as e:
-            logger.error(f"Error processing tweet {i+1}: {str(e)}")
-            processed_tweets.append({"error": str(e)})
-
-    return {
-        "status": "success",
-        "message": f"Processed {len(processed_tweets)} tweets",
-        "processed": processed_tweets,
-    }
-
 
 @app.get("/health")
-async def health_check(request: Request):
-    """
-    Health check endpoint that verifies service status and database connectivity.
-    Returns a 200 OK response if the service is running and can connect to the database.
-    Returns a 503 Service Unavailable if the database connection fails.
-    """
-    client_ip = request.headers.get("x-envoy-external-address", request.client.host)
-    
-    # Basic response with service status
-    response = {
-        "status": "ok",
-        "client_ip": client_ip,
-        "components": {
-            "service": {
-                "status": "ok"
-            }
-        }
-    }
-    
-    # Check database connectivity
-    from db import check_db_connection
-    db_healthy, db_error = await check_db_connection()
-    
-    # Add database status to response
-    response["components"]["database"] = {
-        "status": "ok" if db_healthy else "error",
-    }
-    
-    # Include error message if there was one
+async def health_check(resp: Response):
+    db_healthy, db_error = await db.check_db_connection()
     if not db_healthy:
-        response["components"]["database"]["error"] = db_error
-        # Set overall status to error if database is not healthy
-        response["status"] = "error"
-        # Return 503 Service Unavailable to indicate service degradation
-        from fastapi import status
-        from fastapi.responses import JSONResponse
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content=response
+        resp.status_code = 503
+        return {"status": "error"}
+
+    return {"status": "ok"}
+
+
+async def check_recent_message():
+    twitter_client = TwitterAPI()
+
+    while True:
+        if not election.is_leader:
+            await asyncio.sleep(config.common.LEADER_ELECTION_LEASE_TTL)
+            continue
+
+        # Create list of (most recently posted tweet ~ latest tweet]
+        latest_message = await db.get_last_message_tweet_id()
+        if latest_message is None:
+            raise RuntimeError(
+                "No messages found in database. Killing since this should not happen."
+            )
+
+        api_query = " OR ".join(
+            f"from:{char.twitter_handle}"
+            for char in config.characters._character_config.values()
         )
-    
-    return response
+        fetched_messages: List[Tweet] = []
+        cursor = None
+        while latest_message not in [msg.id for msg in fetched_messages]:
+            query_result = await twitter_client.advanced_search(
+                api_query, cursor=cursor
+            )
+            fetched_messages.extend(query_result.tweets)
+            cursor = query_result.next_cursor
+            if not cursor:
+                break
+        if latest_message not in [msg.id for msg in fetched_messages]:
+            raise RuntimeError(
+                "Latest message not found in Twitter API results. Isn't it weird?"
+            )
+
+        messages_to_send: List[Tweet] = []
+        for msg in fetched_messages:
+            if msg.id == latest_message:
+                break
+            messages_to_send.append(TranslatedTweet(**msg.model_dump()))
+
+        if len(messages_to_send) == 0:
+            wait_duration = config.common.TWITTER_QUERY_INTERVAL_ORDINARY
+            logger.info("No new tweets to process.")
+            await asyncio.sleep(wait_duration)
+            continue
+
+        # We have at least one new tweet to process, change wait duration to a shorter interval
+        wait_duration = config.common.TWITTER_QUERY_INTERVAL_ON_MESSAGE
+        # sort by date ascending
+        messages_to_send.sort(key=lambda x: x.created_at_dt)
+
+        for msg in messages_to_send:
+            try:
+                await send_telegram_message(msg)
+                logger.info(f"Sent tweet {msg.id} to Telegram.")
+            except Exception as e:
+                logger.exception(f"Error processing tweet {msg.id}: {str(e)}")
+
+        await asyncio.sleep(wait_duration)
+
+
+async def start():
+    # Verify current database schema matches our expectations
+    expected_version = db.get_expected_schema_version()
+    current_version = await db.get_current_schema_version()
+    if current_version is None or current_version != expected_version:
+        logger.fatal(
+            f"Database schema version mismatch, expected {expected_version} but got {current_version}. Exiting."
+        )
+        sys.exit(1)
+
+    # Start leader election and leader-only background task
+    election_task = asyncio.run_coroutine_threadsafe(
+        election.start_election(), asyncio.get_running_loop()
+    )
+    leader_task = asyncio.run_coroutine_threadsafe(
+        check_recent_message(), asyncio.get_running_loop()
+    )
+
+    # Start FastAPI app
+    port = int(os.environ.get("PORT", "8000"))
+    uvicorn_config = uvicorn.Config(
+        app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*"
+    )
+    server = uvicorn.Server(uvicorn_config)
+
+    await server.serve()
+
+    # Shutting down, cleanup
+    leader_task.cancel()
+    election_task.cancel()
 
 
 if __name__ == "__main__":
-    # Run the FastAPI app with proxy headers support
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8000,
-        proxy_headers=True,  # Enable proxy headers handling
-        forwarded_allow_ips="*",  # Trust X-Forwarded-* headers from all IPs
-    )
+    asyncio.run(start())

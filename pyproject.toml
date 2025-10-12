@@ -11,7 +11,9 @@ dependencies = [
     "openai>=1.99.2",
     "pydantic",
     "uvicorn",
-    "asyncpg"
+    "asyncpg",
+    "kubernetes-asyncio>=33.3.0",
+    "async-property>=0.2.2",
 ]
 [dependency-groups]
 alembic = [

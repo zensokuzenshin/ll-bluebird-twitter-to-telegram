@@ -4,20 +4,23 @@ Uses the translation prompt defined in prompts/translate.prompt.
 Supports multiple LLM providers with fallback and retry logic.
 """
 
-import os
-import logging
-from typing import Dict, Any, Optional, List, Tuple, Protocol, Union
 import asyncio
+import logging
+import os
 import random
 from abc import ABC, abstractmethod
+from typing import Any, Dict, List, Optional, Protocol, Tuple, Union
 
 # Import for Anthropic provider
 try:
-    from anthropic import AsyncAnthropic, RateLimitError as AnthropicRateLimitError
     from anthropic import (
-        APIStatusError as AnthropicAPIStatusError,
         APIError as AnthropicAPIError,
     )
+    from anthropic import (
+        APIStatusError as AnthropicAPIStatusError,
+    )
+    from anthropic import AsyncAnthropic
+    from anthropic import RateLimitError as AnthropicRateLimitError
     from anthropic.types import MessageParam
 
     ANTHROPIC_AVAILABLE = True
@@ -26,13 +29,15 @@ except ImportError:
 
 # Import for OpenAI provider
 try:
-    from openai import AsyncOpenAI
-    from openai.types.chat import ChatCompletionMessageParam
-    from openai import RateLimitError as OpenAIRateLimitError
     from openai import (
-        APIStatusError as OpenAIAPIStatusError,
         APIError as OpenAIAPIError,
     )
+    from openai import (
+        APIStatusError as OpenAIAPIStatusError,
+    )
+    from openai import AsyncOpenAI
+    from openai import RateLimitError as OpenAIRateLimitError
+    from openai.types.chat import ChatCompletionMessageParam
 
     OPENAI_AVAILABLE = True
 except ImportError:
@@ -311,7 +316,7 @@ async def translate(
     model: Optional[str] = None,
     max_retries: int = 3,
     initial_backoff: float = 1.0,
-) -> str:
+) -> (str, Optional[str]):
     """
     Translate text from Japanese to Korean using configured LLM providers.
     Will try each provider in order until one succeeds or all fail.
@@ -331,7 +336,7 @@ async def translate(
     """
     # Validate inputs
     if not text or not text.strip():
-        return ""
+        return "", None
 
     # Backward compatibility for direct model specification
     if model and not api_key:
@@ -401,7 +406,7 @@ async def translate(
                     max_retries=max_retries,
                     initial_backoff=initial_backoff,
                 )
-                return translated_text
+                return translated_text, f"{provider_name}:{model_name}"
 
             except RateLimitedError as e:
                 # Rate limit errors should cause us to try the next provider

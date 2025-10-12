@@ -1,20 +1,22 @@
-from logging.config import fileConfig
+import logging
 import os
 import sys
-import logging
+from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool, text
-from sqlalchemy.engine import Engine
+from sqlalchemy import engine_from_config, pool, text
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.engine import Engine
 
 from alembic import context
 
 # Add the src directory to the Python path
-sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+sys.path.append(
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+)
 
 # Import config for DSN
 from config.common import POSTGRES_DSN
+
 # SQLAlchemy requires distinct DSN for CRDB
 dsn = POSTGRES_DSN.replace("postgresql://", "cockroachdb://")
 
@@ -66,13 +68,13 @@ def run_migrations_online() -> None:
 
     In this scenario we need to create an Engine
     and associate a connection with the context.
-    
+
     Includes special handling for CockroachDB.
     """
     # Use the DSN from config instead of relying on sqlalchemy.url in the config file
     configuration = config.get_section(config.config_ini_section, {})
     configuration["sqlalchemy.url"] = dsn
-    
+
     # Add CockroachDB-specific settings
     # These help with transaction retry logic and performance
     cockroach_opts = {
@@ -81,7 +83,7 @@ def run_migrations_online() -> None:
         }
     }
     configuration.update(cockroach_opts)
-    
+
     connectable = engine_from_config(
         configuration,
         prefix="sqlalchemy.",
@@ -91,7 +93,7 @@ def run_migrations_online() -> None:
     with connectable.connect() as connection:
         # Configure Alembic context
         context.configure(
-            connection=connection, 
+            connection=connection,
             target_metadata=target_metadata,
         )
         with context.begin_transaction():

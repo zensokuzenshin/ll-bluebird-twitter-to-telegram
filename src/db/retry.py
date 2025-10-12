@@ -5,7 +5,8 @@ Utility functions for retrying database operations with exponential backoff.
 import asyncio
 import logging
 import random
-from typing import TypeVar, Callable, Awaitable, Any, Optional, List, Type
+from typing import Any, Awaitable, Callable, List, Optional, Type, TypeVar
+
 import asyncpg
 
 # Configure module-specific logger
@@ -29,14 +30,11 @@ DEFAULT_RETRYABLE_EXCEPTIONS = (
     asyncpg.exceptions.TooManyConnectionsError,
     asyncpg.exceptions.PostgresConnectionError,
     asyncpg.exceptions.ConnectionFailureError,
-    
     # Transaction-related errors
     asyncpg.exceptions.DeadlockDetectedError,
     asyncpg.exceptions.SerializationError,  # Important for CockroachDB's serializable isolation
-    
     # Query-related errors
     asyncpg.exceptions.QueryCanceledError,  # For statement timeout
-    
     # CockroachDB-specific retry cases - detected by error message patterns
     # These are raised as generic PostgresError with specific codes/messages
     asyncpg.exceptions.PostgresError,  # Base class for all PostgreSQL errors - filtered by message
@@ -56,23 +54,28 @@ COCKROACHDB_RETRY_MESSAGES = [
     "not in a transaction",
     "Transaction waiting for resume",
     "commit result is ambiguous",
-    "transaction is too large to complete"
+    "transaction is too large to complete",
 ]
+
 
 def is_retryable_error(e: Exception) -> bool:
     """
     Determine if an exception is retryable, with special handling for CockroachDB errors.
-    
+
     Args:
         e: The exception to check
-        
+
     Returns:
         bool: True if the exception is retryable, False otherwise
     """
     # Check if it's one of our explicitly defined retryable exception types
-    if any(isinstance(e, exc_type) for exc_type in DEFAULT_RETRYABLE_EXCEPTIONS if exc_type is not asyncpg.exceptions.PostgresError):
+    if any(
+        isinstance(e, exc_type)
+        for exc_type in DEFAULT_RETRYABLE_EXCEPTIONS
+        if exc_type is not asyncpg.exceptions.PostgresError
+    ):
         return True
-    
+
     # For PostgresError, check if it's a CockroachDB-specific error message
     if isinstance(e, asyncpg.exceptions.PostgresError):
         error_str = str(e).lower()
@@ -80,7 +83,7 @@ def is_retryable_error(e: Exception) -> bool:
             if retry_msg.lower() in error_str:
                 logger.info(f"Detected CockroachDB retryable error: {error_str}")
                 return True
-    
+
     return False
 
 
@@ -121,28 +124,34 @@ async def retry_with_backoff(
 
     retries = 0
     last_exception = None
-    
+
     # Try the operation until it succeeds or we reach max_retries
     while retries <= max_retries:
         try:
             if retries > 0:
-                logger.debug(f"Retry attempt {retries}/{max_retries} for operation {operation.__name__}")
+                logger.debug(
+                    f"Retry attempt {retries}/{max_retries} for operation {operation.__name__}"
+                )
             return await operation(*args, **kwargs)
-        
+
         except Exception as e:
             last_exception = e
-            
+
             # Check if this exception is retryable
             if not is_retryable_error(e):
                 # Not a retryable exception, reraise immediately
-                logger.warning(f"Non-retryable exception in {operation.__name__}: {str(e)}")
+                logger.warning(
+                    f"Non-retryable exception in {operation.__name__}: {str(e)}"
+                )
                 raise
-            
+
             # Check if we've reached max retries
             if retries >= max_retries:
-                logger.error(f"Max retries ({max_retries}) reached for {operation.__name__}: {str(e)}")
+                logger.error(
+                    f"Max retries ({max_retries}) reached for {operation.__name__}: {str(e)}"
+                )
                 raise
-            
+
             # For CockroachDB serialization errors, use a more aggressive retry strategy
             if isinstance(e, asyncpg.exceptions.SerializationError) or (
                 isinstance(e, asyncpg.exceptions.PostgresError) and "40001" in str(e)
@@ -156,51 +165,49 @@ async def retry_with_backoff(
                 else:
                     # After that, use normal exponential backoff
                     backoff_time = min(
-                        initial_backoff * (backoff_factor ** (retries - 1)),
-                        max_backoff
+                        initial_backoff * (backoff_factor ** (retries - 1)), max_backoff
                     )
             else:
                 # Normal exponential backoff for other errors
                 backoff_time = min(
-                    initial_backoff * (backoff_factor ** retries),
-                    max_backoff
+                    initial_backoff * (backoff_factor**retries), max_backoff
                 )
-            
+
             # Add jitter (random variation) to avoid thundering herd problem
             jitter_amount = backoff_time * jitter * random.uniform(-1, 1)
-            final_backoff = max(0.001, backoff_time + jitter_amount)  # Ensure positive backoff
-            
+            final_backoff = max(
+                0.001, backoff_time + jitter_amount
+            )  # Ensure positive backoff
+
             logger.warning(
                 f"Retryable error in {operation.__name__}: {str(e)}. "
-                f"Retrying in {final_backoff:.3f}s (attempt {retries+1}/{max_retries})"
+                f"Retrying in {final_backoff:.3f}s (attempt {retries + 1}/{max_retries})"
             )
-            
+
             # Wait before retrying
             await asyncio.sleep(final_backoff)
-            
+
             retries += 1
-    
+
     # We should never reach here due to the raise in the loop, but just in case
     if last_exception:
         raise last_exception
-    
+
     # This should never happen, but needed for type checking
     raise RuntimeError("Unexpected error in retry logic")
 
 
 async def retry_db_operation(
-    operation: Callable[..., Awaitable[T]], 
-    *args: Any, 
-    **kwargs: Any
+    operation: Callable[..., Awaitable[T]], *args: Any, **kwargs: Any
 ) -> T:
     """
     Retry a database operation with the default retry configuration.
-    
+
     Args:
         operation: The async database operation to retry
         *args: Positional arguments to pass to the operation
         **kwargs: Keyword arguments to pass to the operation
-        
+
     Returns:
         The result of the operation
     """

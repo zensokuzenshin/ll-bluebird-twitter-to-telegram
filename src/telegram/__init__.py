@@ -1,8 +1,13 @@
-import httpx
+import datetime
 import logging
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional, Union
+
+import httpx
+
 import config
-from db import store_translated_message, get_telegram_message_id_for_tweet
+import db
+from translate.types.translated_tweet import TranslatedTweet
+from tweet import Tweet
 
 # Configure module-specific logger
 logger = logging.getLogger(__name__)
@@ -10,45 +15,28 @@ logger = logging.getLogger(__name__)
 
 # Helper function to send message to Telegram
 async def send_telegram_message(
-    as_character: config.types.Character,
-    message: str,
-    tweet_id: Optional[str] = None,
-    tweet_url: Optional[str] = None,
-    original_text: Optional[str] = None,
-    translated_text: Optional[str] = None,
-    parent_tweet_id: Optional[str] = None,
-    llm_provider: Optional[str] = None,
-    reply_to_message_id: Optional[int] = None,
+    tweet: Union[Tweet, TranslatedTweet],
 ) -> Dict[str, Any]:
-    """
-    Send a message to the Telegram chat and store it in the database.
-
-    Args:
-        as_character: The character to send the message as
-        message: The formatted HTML message to send
-        tweet_id: The ID of the tweet being forwarded
-        tweet_url: The URL of the tweet being forwarded
-        original_text: The original tweet text
-        translated_text: The translated tweet text
-        parent_tweet_id: The ID of the parent tweet if this is a reply
-        llm_provider: The LLM provider used for translation
-        reply_to_message_id: Telegram message ID to reply to
-
-    Returns:
-        Dict[str, Any]: The Telegram API response
-    """
-    url = f"https://api.telegram.org/bot{as_character.telegram_bot_token}/sendMessage"
+    # Find matching character and build API URL
+    character = config.characters[tweet.author.userName]
+    url = f"https://api.telegram.org/bot{character.telegram_bot_token}/sendMessage"
 
     payload = {
         "chat_id": config.common.TELEGRAM_CHAT_ID,
-        "text": message,
+        "text": (
+            f"{await tweet.text_translated if isinstance(tweet, TranslatedTweet) else tweet.text}\n\n"
+            f"<code>{(tweet.created_at_dt + datetime.timedelta(hours=9)).strftime('%m/%d %H:%M')}</code> | <i><a href='{tweet.url}'>Link</a></i>"
+        ),
         "parse_mode": "HTML",
         "disable_web_page_preview": True,  # Disable link preview
     }
 
-    # If this is a reply to another message, add the reply_to_message_id
-    if reply_to_message_id:
-        payload["reply_to_message_id"] = reply_to_message_id
+    if tweet.isReply:
+        parent_tg_message_id = await db.get_telegram_message_id_for_tweet(
+            tweet.inReplyToId
+        )
+        if parent_tg_message_id:
+            payload["reply_to_message_id"] = parent_tg_message_id
 
     try:
         # Send the message to Telegram
@@ -68,24 +56,24 @@ async def send_telegram_message(
         # Parse the response
         response_data = response.json()
 
-        # Store the message in the database if we have tweet information
-        if tweet_id and tweet_url and original_text and translated_text:
+        if isinstance(tweet, TranslatedTweet):
+            # Store the message in the database if we have tweet information
             try:
                 telegram_message_id = response_data.get("result", {}).get("message_id")
                 if telegram_message_id:
                     # Store the message in the database
-                    await store_translated_message(
+                    await db.store_translated_message(
                         telegram_message_id=telegram_message_id,
-                        tweet_id=tweet_id,
-                        tweet_url=tweet_url,
-                        character_name=as_character.name,
-                        translation_text=translated_text,
-                        original_text=original_text,
-                        parent_tweet_id=parent_tweet_id,
-                        llm_provider=llm_provider,
+                        tweet_id=tweet.id,
+                        tweet_url=tweet.url,
+                        character_name=character.name,
+                        translation_text=await tweet.text_translated,
+                        original_text=tweet.text,
+                        parent_tweet_id=tweet.inReplyToId,
+                        llm_provider=tweet.translation_provider,
                     )
                     logger.info(
-                        f"Stored message in database: tweet_id={tweet_id}, telegram_message_id={telegram_message_id}"
+                        f"Stored message in database: tweet_id={tweet.id}, telegram_message_id={telegram_message_id}"
                     )
                 else:
                     logger.warning(

@@ -3,17 +3,15 @@ Database module for the Twitter to Telegram forwarder.
 Handles PostgreSQL connections and operations.
 """
 
-import asyncio
-import logging
-import asyncpg
-from typing import Optional, Dict, Any, List, Tuple
-import config
-import os
-import subprocess
-import sys
 import glob
+import logging
+import os
 import re
-from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
+import asyncpg
+
+import config
 
 # Configure module-specific logger
 logger = logging.getLogger(__name__)
@@ -21,10 +19,12 @@ logger = logging.getLogger(__name__)
 # Global connection pool
 _pool: Optional[asyncpg.Pool] = None
 
+
 async def _setup_connection(conn: asyncpg.Connection) -> None:
     await conn.execute("SET application_name = 'lovelive-bluebird-twitter-to-telegram'")
     # Set a statement timeout to prevent long-running queries
     await conn.execute("SET statement_timeout = '30s'")
+
 
 async def _create_connection_pool() -> asyncpg.Pool:
     """
@@ -35,7 +35,7 @@ async def _create_connection_pool() -> asyncpg.Pool:
         asyncpg.Pool: The connection pool
     """
     logger.info(f"Creating database connection pool to {config.common.POSTGRES_HOST}")
-    
+
     # Create the connection pool with a setup callback for each new connection
     return await asyncpg.create_pool(
         dsn=config.common.POSTGRES_DSN,
@@ -64,7 +64,7 @@ async def get_connection_pool() -> asyncpg.Pool:
         try:
             # Import retry utility here to avoid circular imports
             from .retry import retry_with_backoff
-            
+
             # Retry connection pool creation with backoff
             _pool = await retry_with_backoff(
                 _create_connection_pool,
@@ -74,7 +74,9 @@ async def get_connection_pool() -> asyncpg.Pool:
             )
 
         except Exception as e:
-            logger.error(f"Failed to create database connection pool after retries: {str(e)}")
+            logger.error(
+                f"Failed to create database connection pool after retries: {str(e)}"
+            )
             raise
 
     return _pool
@@ -90,10 +92,7 @@ async def close_connection_pool():
         logger.info("Database connection pool closed")
 
 
-async def _check_table_exists(
-    conn: asyncpg.Connection, 
-    table_name: str
-) -> bool:
+async def _check_table_exists(conn: asyncpg.Connection, table_name: str) -> bool:
     """
     Helper function to check if a table exists.
     This function is used by get_current_schema_version and is designed to be retried.
@@ -117,67 +116,14 @@ async def _check_table_exists(
         """)
 
 
-async def _fetch_schema_version(conn: asyncpg.Connection) -> Optional[str]:
-    """
-    Helper function to fetch the current schema version.
-    This function is used by get_current_schema_version and is designed to be retried.
-    Uses an explicit transaction to avoid "not in a transaction" errors.
-
-    Args:
-        conn: The database connection to use
-
-    Returns:
-        Optional[str]: The current schema version
-    """
-    # Start an explicit transaction to avoid "not in a transaction" errors
-    async with conn.transaction():
-        return await conn.fetchval("SELECT version_num FROM alembic_version")
-
-
-async def get_current_schema_version() -> Optional[str]:
-    """
-    Get the current database schema version from the alembic_version table with retry capability.
-    
-    Returns:
-        str: The current schema version or None if not found/table doesn't exist
-    """
-    try:
-        from .retry import retry_db_operation
-        
-        pool = await get_connection_pool()
-        
-        async with pool.acquire() as conn:
-            # Check if alembic_version table exists with retry
-            table_exists = await retry_db_operation(
-                _check_table_exists,
-                conn,
-                "alembic_version"
-            )
-            
-            if not table_exists:
-                logger.warning("alembic_version table does not exist - database has not been initialized")
-                return None
-            
-            # Get the current version with retry
-            version = await retry_db_operation(
-                _fetch_schema_version,
-                conn
-            )
-            
-            return version
-    except Exception as e:
-        logger.error(f"Failed to check database schema version: {str(e)}")
-        return None
-
-
 def get_expected_schema_version() -> str:
     """
     Dynamically determine the expected database schema version from the most recent Alembic migration.
-    
+
     This function finds all migration files in the alembic/versions directory, parses their
     filenames (which should follow the pattern 'seq_date_comment.py' where seq is a number),
     and returns the revision ID from the file with the highest sequence number.
-    
+
     Returns:
         str: The expected schema version (revision ID of the most recent migration)
     """
@@ -185,51 +131,57 @@ def get_expected_schema_version() -> str:
     project_root = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
-    
+
     # Path to Alembic versions directory
     versions_dir = os.path.join(project_root, "alembic", "versions")
-    
+
     # Find all migration files
     migration_files = glob.glob(os.path.join(versions_dir, "*.py"))
-    
+
     if not migration_files:
         logger.error(f"No migration files found in {versions_dir}")
         return ""
-    
+
     # Regular expression to extract sequence numbers from filenames
     # Expects filenames like: 001_20250608_initial_schema.py
     filename_pattern = re.compile(r"^(\d+)_.*\.py$")
-    
+
     # Regular expression to extract revision IDs from migration files
     # This pattern matches both "revision = '123abc'" and "revision: str = '123abc'" formats
-    revision_pattern = re.compile(r"revision(?:\s*:\s*\w+)?\s*=\s*['\"]([0-9a-f]+)['\"]")
-    
+    revision_pattern = re.compile(
+        r"revision(?:\s*:\s*\w+)?\s*=\s*['\"]([0-9a-f]+)['\"]"
+    )
+
     # Dictionary to store sequence numbers, file paths, and revision IDs
     migrations = {}
-    
+
     # Parse each migration file to extract sequence number and revision ID
     for file_path in migration_files:
         filename = os.path.basename(file_path)
         filename_match = filename_pattern.match(filename)
-        
+
         if not filename_match:
-            logger.warning(f"Migration file {filename} does not follow the expected naming pattern")
+            logger.warning(
+                f"Migration file {filename} does not follow the expected naming pattern"
+            )
             continue
-        
+
         try:
             # Extract sequence number from filename
             seq_num = int(filename_match.group(1))
-            
+
             # Extract revision ID from file content
-            with open(file_path, 'r') as f:
+            with open(file_path, "r") as f:
                 content = f.read()
-                
+
                 # Try to match revision ID in different formats
                 revision_match = revision_pattern.search(content)
-                
+
                 # If not found, also try to find it in a comment line like "Revision ID: 123abc"
                 if not revision_match:
-                    revision_id_comment = re.search(r"Revision ID:\s*([0-9a-f]+)", content)
+                    revision_id_comment = re.search(
+                        r"Revision ID:\s*([0-9a-f]+)", content
+                    )
                     if revision_id_comment:
                         revision_id = revision_id_comment.group(1)
                         logger.info(f"Found revision ID in comment: {revision_id}")
@@ -239,119 +191,55 @@ def get_expected_schema_version() -> str:
                 else:
                     revision_id = revision_match.group(1)
                 migrations[seq_num] = {
-                    'file_path': file_path,
-                    'revision_id': revision_id,
-                    'filename': filename
+                    "file_path": file_path,
+                    "revision_id": revision_id,
+                    "filename": filename,
                 }
         except Exception as e:
             logger.warning(f"Failed to parse migration file {filename}: {str(e)}")
-    
+
     if not migrations:
-        logger.error("Could not find any valid migration files with the expected naming pattern")
+        logger.error(
+            "Could not find any valid migration files with the expected naming pattern"
+        )
         return ""
-    
+
     # Get the migration with the highest sequence number
     latest_seq_num = max(migrations.keys())
     latest_migration = migrations[latest_seq_num]
-    latest_revision = latest_migration['revision_id']
-    
-    logger.info(f"Latest migration (seq: {latest_seq_num}) is {latest_revision} from {latest_migration['filename']}")
-    
+    latest_revision = latest_migration["revision_id"]
+
+    logger.info(
+        f"Latest migration (seq: {latest_seq_num}) is {latest_revision} from {latest_migration['filename']}"
+    )
+
     return latest_revision
 
 
-async def check_schema_version() -> bool:
+async def get_current_schema_version() -> Optional[str]:
     """
-    Check if the current database schema version matches the expected version.
-    Handles database queries directly to avoid transaction issues.
-    
+    Get the current database schema version from the alembic_version table.
+    This function is used by check_schema_version and is designed to be retried.
+    Uses an explicit transaction to avoid "not in a transaction" errors.
+
     Returns:
-        bool: True if versions match, False otherwise
+        Optional[str]: The current schema version, or None if not found
     """
-    # Get the expected version from migration files first
-    expected_version = get_expected_schema_version()
-    
-    if not expected_version:
-        logger.error("Could not determine expected schema version from migration files.")
-        logger.error("Please check that the alembic/versions directory contains valid migration files.")
-        return False
-    
-    # Now check the current version directly, with proper transaction handling
-    try:
-        pool = await get_connection_pool()
-        current_version = None
-        
-        async with pool.acquire() as conn:
-            # First check if the table exists
-            async with conn.transaction():
-                table_exists = await conn.fetchval("""
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables 
-                        WHERE table_schema = 'public' 
-                        AND table_name = 'alembic_version'
-                    )
-                """)
-                
-                if not table_exists:
-                    logger.warning("alembic_version table does not exist - database has not been initialized")
-                    return False
-            
-            # Then get the version
-            async with conn.transaction():
-                current_version = await conn.fetchval("SELECT version_num FROM alembic_version")
-        
-        # Compare versions
-        if current_version is None:
-            logger.error("Database schema is not initialized. Please run migrations manually.")
-            return False
-        
-        if current_version != expected_version:
-            logger.error(f"Database schema version mismatch! Current: {current_version}, Expected: {expected_version}")
-            logger.error("Please run migrations manually to update the database schema.")
-            return False
-        
-        logger.info(f"Database schema version is correct: {current_version}")
-        return True
-    
-    except Exception as e:
-        logger.error(f"Failed to check database schema version: {str(e)}")
-        return False
+    pool = await get_connection_pool()
 
+    async with pool.acquire() as conn:
+        # First check if the alembic_version table exists
+        table_exists = await _check_table_exists(conn, "alembic_version")
 
-def run_migrations():
-    """
-    Run Alembic migrations to update the database schema.
-    This should ONLY be run from the CLI, not automatically by the server.
-    """
-    try:
-        # Get the project root directory
-        project_root = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        )
+        if not table_exists:
+            logger.warning(
+                "alembic_version table does not exist - database has not been initialized"
+            )
+            return None
 
-        # Set environment variables for Alembic
-        env = os.environ.copy()
-        env["POSTGRES_DSN"] = config.common.POSTGRES_DSN
-
-        # Run Alembic upgrade
-        logger.info("Running database migrations with Alembic...")
-        result = subprocess.run(
-            ["alembic", "upgrade", "head"],
-            cwd=project_root,
-            env=env,
-            capture_output=True,
-            text=True,
-        )
-
-        if result.returncode == 0:
-            logger.info(f"Database migrations completed successfully: {result.stdout}")
-        else:
-            logger.error(f"Database migration failed: {result.stderr}")
-            raise Exception(f"Database migration failed: {result.stderr}")
-
-    except Exception as e:
-        logger.error(f"Failed to run database migrations: {str(e)}")
-        raise
+        # Start an explicit transaction to avoid "not in a transaction" errors
+        async with conn.transaction():
+            return await conn.fetchval("SELECT version_num FROM alembic_version")
 
 
 async def _insert_translated_message(
@@ -401,7 +289,7 @@ async def _insert_translated_message(
         translation_text,
         original_text,
     )
-    
+
     return row["id"]
 
 
@@ -433,7 +321,7 @@ async def store_translated_message(
         Any: The ID of the inserted record (can be int or UUID)
     """
     from .retry import retry_db_operation
-    
+
     pool = await get_connection_pool()
 
     async with pool.acquire() as conn:
@@ -458,8 +346,7 @@ async def store_translated_message(
 
 
 async def _fetch_telegram_message_id(
-    conn: asyncpg.Connection, 
-    tweet_id: str
+    conn: asyncpg.Connection, tweet_id: str
 ) -> Optional[Dict[str, Any]]:
     """
     Helper function to fetch the Telegram message ID for a tweet.
@@ -493,7 +380,7 @@ async def get_telegram_message_id_for_tweet(tweet_id: str) -> Optional[int]:
         Optional[int]: The Telegram message ID, or None if not found
     """
     from .retry import retry_db_operation
-    
+
     pool = await get_connection_pool()
 
     async with pool.acquire() as conn:
@@ -509,70 +396,11 @@ async def get_telegram_message_id_for_tweet(tweet_id: str) -> Optional[int]:
         return None
 
 
-async def _fetch_translation_history(
-    conn: asyncpg.Connection,
-    character_name: str, 
-    limit: int
-) -> List[asyncpg.Record]:
-    """
-    Helper function to fetch translation history for a character.
-    This function is used by get_translation_history_for_character and is designed to be retried.
-
-    Args:
-        conn: The database connection to use
-        character_name: The character name
-        limit: Maximum number of translations to return
-
-    Returns:
-        List[asyncpg.Record]: List of translation records
-    """
-    return await conn.fetch(
-        """
-        SELECT tweet_id, translation_text, original_text
-        FROM translated_messages 
-        WHERE character_name = $1
-        ORDER BY created_at DESC
-        LIMIT $2
-        """,
-        character_name,
-        limit,
-    )
-
-
-async def get_translation_history_for_character(
-    character_name: str, limit: int = 10
-) -> List[Dict[str, Any]]:
-    """
-    Get recent translation history for a character to use as reference with retry capability.
-
-    Args:
-        character_name: The character name
-        limit: Maximum number of translations to return
-
-    Returns:
-        List[Dict[str, Any]]: List of recent translations
-    """
-    from .retry import retry_db_operation
-    
-    pool = await get_connection_pool()
-
-    async with pool.acquire() as conn:
-        # Wrap the database operation with retry logic
-        rows = await retry_db_operation(
-            _fetch_translation_history,
-            conn,
-            character_name,
-            limit,
-        )
-
-        return [dict(row) for row in rows]
-
-
 async def check_db_connection() -> Tuple[bool, Optional[str]]:
     """
     Check database connectivity by attempting a simple query.
     Uses direct transaction handling to avoid issues.
-    
+
     Returns:
         Tuple[bool, Optional[str]]: A tuple containing:
             - A boolean indicating if the connection is healthy
@@ -581,23 +409,54 @@ async def check_db_connection() -> Tuple[bool, Optional[str]]:
     try:
         # Get connection pool (or create if not exists)
         pool = await get_connection_pool()
-        
+
         # Perform a simple query with explicit transaction
         async with pool.acquire() as conn:
             # Use a simple query that works on both PostgreSQL and CockroachDB
             query = "SELECT 1 as connected"
-            
+
             # Use explicit transaction
             async with conn.transaction():
                 result = await conn.fetchval(query)
-            
+
             if result == 1:
                 logger.debug("Database health check passed")
                 return True, None
             else:
-                logger.warning(f"Database health check failed: unexpected result {result}")
+                logger.warning(
+                    f"Database health check failed: unexpected result {result}"
+                )
                 return False, f"Unexpected result: {result}"
-                
+
     except Exception as e:
         logger.error(f"Database health check failed: {str(e)}")
         return False, str(e)
+
+
+async def get_last_message_tweet_id() -> Optional[str]:
+    """
+    Get the tweet ID of the most recently stored translated message.
+
+    Returns:
+        Optional[str]: The tweet ID of the last translated message, or None if no messages exist
+    """
+    try:
+        pool = await get_connection_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT tweet_id 
+                FROM translated_messages 
+                ORDER BY tweet_id DESC 
+                LIMIT 1
+                """
+            )
+
+            if row:
+                return row["tweet_id"]
+            return None
+
+    except Exception as e:
+        logger.error(f"Failed to fetch last message tweet ID: {str(e)}")
+        return None
