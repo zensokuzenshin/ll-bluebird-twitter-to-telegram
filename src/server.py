@@ -68,13 +68,13 @@ async def check_recent_message():
                 "No messages found in database. Killing since this should not happen."
             )
 
-        api_query = " OR ".join(
+        api_query = "(" + " OR ".join(
             f"from:{char.twitter_handle}"
             for char in config.characters._character_config.values()
-        )
+        ) + ")" + f" AND since_id:{latest_message}"
         fetched_messages: List[Tweet] = []
         cursor = None
-        while latest_message not in [msg.id for msg in fetched_messages]:
+        while True:
             query_result = await twitter_client.advanced_search(
                 api_query, cursor=cursor
             )
@@ -82,18 +82,8 @@ async def check_recent_message():
             cursor = query_result.next_cursor
             if not cursor:
                 break
-        if latest_message not in [msg.id for msg in fetched_messages]:
-            raise RuntimeError(
-                "Latest message not found in Twitter API results. Isn't it weird?"
-            )
 
-        messages_to_send: List[Tweet] = []
-        for msg in fetched_messages:
-            if msg.id == latest_message:
-                break
-            messages_to_send.append(TranslatedTweet(**msg.model_dump()))
-
-        if len(messages_to_send) == 0:
+        if len(fetched_messages) == 0:
             wait_duration = config.common.TWITTER_QUERY_INTERVAL_ORDINARY
             logger.info("No new tweets to process.")
             await asyncio.sleep(wait_duration)
@@ -102,6 +92,7 @@ async def check_recent_message():
         # We have at least one new tweet to process, change wait duration to a shorter interval
         wait_duration = config.common.TWITTER_QUERY_INTERVAL_ON_MESSAGE
         # sort by date ascending
+        messages_to_send: List[Tweet] = [TranslatedTweet(**msg.model_dump()) for msg in fetched_messages]
         messages_to_send.sort(key=lambda x: x.created_at_dt)
 
         for msg in messages_to_send:
