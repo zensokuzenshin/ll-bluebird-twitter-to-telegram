@@ -61,48 +61,53 @@ async def check_recent_message():
             await asyncio.sleep(config.common.LEADER_ELECTION_LEASE_TTL)
             continue
 
-        # Create list of (most recently posted tweet ~ latest tweet]
-        latest_message = await db.get_last_message_tweet_id()
-        if latest_message is None:
-            raise RuntimeError(
-                "No messages found in database. Killing since this should not happen."
-            )
+        try:
+            # Create list of (most recently posted tweet ~ latest tweet]
+            latest_message = await db.get_last_message_tweet_id()
+            if latest_message is None:
+                raise RuntimeError(
+                    "No messages found in database. Killing since this should not happen."
+                )
 
-        api_query = "(" + " OR ".join(
-            f"from:{char.twitter_handle}"
-            for char in config.characters._character_config.values()
-        ) + ")" + f" AND since_id:{latest_message}"
-        fetched_messages: List[Tweet] = []
-        cursor = None
-        while True:
-            query_result = await twitter_client.advanced_search(
-                api_query, cursor=cursor
-            )
-            fetched_messages.extend(query_result.tweets)
-            cursor = query_result.next_cursor
-            if not cursor:
-                break
+            api_query = "(" + " OR ".join(
+                f"from:{char.twitter_handle}"
+                for char in config.characters._character_config.values()
+            ) + ")" + f" AND since_id:{latest_message}"
+            fetched_messages: List[Tweet] = []
+            cursor = None
+            while True:
+                query_result = await twitter_client.advanced_search(
+                    api_query, cursor=cursor
+                )
+                fetched_messages.extend(query_result.tweets)
+                cursor = query_result.next_cursor
+                if not cursor:
+                    break
 
-        if len(fetched_messages) == 0:
-            wait_duration = config.common.TWITTER_QUERY_INTERVAL_ORDINARY
-            logger.info("No new tweets to process.")
+            if len(fetched_messages) == 0:
+                wait_duration = config.common.TWITTER_QUERY_INTERVAL_ORDINARY
+                logger.info("No new tweets to process.")
+                await asyncio.sleep(wait_duration)
+                continue
+
+            # We have at least one new tweet to process, change wait duration to a shorter interval
+            wait_duration = config.common.TWITTER_QUERY_INTERVAL_ON_MESSAGE
+            # sort by date ascending
+            messages_to_send: List[Tweet] = [TranslatedTweet(**msg.model_dump()) for msg in fetched_messages]
+            messages_to_send.sort(key=lambda x: x.created_at_dt)
+
+            for msg in messages_to_send:
+                try:
+                    await send_telegram_message(msg)
+                    logger.info(f"Sent tweet {msg.id} to Telegram.")
+                except Exception as e:
+                    logger.exception(f"Error processing tweet {msg.id}", exc_info=e)
+                    break # 에러난 부분에서 끊어서 다음 루프에서 다시 시도
+
             await asyncio.sleep(wait_duration)
-            continue
-
-        # We have at least one new tweet to process, change wait duration to a shorter interval
-        wait_duration = config.common.TWITTER_QUERY_INTERVAL_ON_MESSAGE
-        # sort by date ascending
-        messages_to_send: List[Tweet] = [TranslatedTweet(**msg.model_dump()) for msg in fetched_messages]
-        messages_to_send.sort(key=lambda x: x.created_at_dt)
-
-        for msg in messages_to_send:
-            try:
-                await send_telegram_message(msg)
-                logger.info(f"Sent tweet {msg.id} to Telegram.")
-            except Exception as e:
-                logger.exception(f"Error processing tweet {msg.id}: {str(e)}")
-
-        await asyncio.sleep(wait_duration)
+        except Exception as e:
+            logger.exception(f"Error in check_recent_message loop", exc_info=e)
+            await asyncio.sleep(config.common.LEADER_ELECTION_LEASE_TTL)
 
 
 async def start():
