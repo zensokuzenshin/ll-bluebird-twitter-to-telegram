@@ -93,7 +93,7 @@ async def check_recent_message():
             fetched_messages = [
                 msg
                 for msg in fetched_messages
-                if msg.user_handle in config.characters._twitter_handle_map.keys()
+                if msg.author.userName in config.characters._twitter_handle_map.keys()
             ]
 
             if len(fetched_messages) == 0:
