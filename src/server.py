@@ -90,11 +90,16 @@ async def check_recent_message():
                     break
 
             # Filter out non-targets, seems like Elon is trolling yet again
+            logger.info(f"Fetched {len(fetched_messages)} new tweets from Twitter API.")
+            logger.info(f"Usernames of fetched tweets: {[msg.author.userName for msg in fetched_messages]}")
             fetched_messages = [
                 msg
                 for msg in fetched_messages
                 if msg.author.userName in config.characters._twitter_handle_map.keys()
             ]
+            logger.info(
+                f"{len(fetched_messages)} tweets are from target accounts after filtering."
+            )
 
             if len(fetched_messages) == 0:
                 wait_duration = config.common.TWITTER_QUERY_INTERVAL_ORDINARY
