@@ -69,10 +69,15 @@ async def check_recent_message():
                     "No messages found in database. Killing since this should not happen."
                 )
 
-            api_query = "(" + " OR ".join(
-                f"from:{char.twitter_handle}"
-                for char in config.characters._character_config.values()
-            ) + ")" + f" AND since_id:{latest_message}"
+            api_query = (
+                "("
+                + " OR ".join(
+                    f"from:{char.twitter_handle}"
+                    for char in config.characters._character_config.values()
+                )
+                + ")"
+                + f" AND since_id:{latest_message}"
+            )
             fetched_messages: List[Tweet] = []
             cursor = None
             while True:
@@ -84,6 +89,13 @@ async def check_recent_message():
                 if not cursor:
                     break
 
+            # Filter out non-targets, seems like Elon is trolling yet again
+            fetched_messages = [
+                msg
+                for msg in fetched_messages
+                if msg.user_handle in config.characters._twitter_handle_map.keys()
+            ]
+
             if len(fetched_messages) == 0:
                 wait_duration = config.common.TWITTER_QUERY_INTERVAL_ORDINARY
                 logger.info("No new tweets to process.")
@@ -93,7 +105,9 @@ async def check_recent_message():
             # We have at least one new tweet to process, change wait duration to a shorter interval
             wait_duration = config.common.TWITTER_QUERY_INTERVAL_ON_MESSAGE
             # sort by date ascending
-            messages_to_send: List[Tweet] = [TranslatedTweet(**msg.model_dump()) for msg in fetched_messages]
+            messages_to_send: List[Tweet] = [
+                TranslatedTweet(**msg.model_dump()) for msg in fetched_messages
+            ]
             messages_to_send.sort(key=lambda x: x.created_at_dt)
 
             for msg in messages_to_send:
@@ -102,7 +116,7 @@ async def check_recent_message():
                     logger.info(f"Sent tweet {msg.id} to Telegram.")
                 except Exception as e:
                     logger.exception(f"Error processing tweet {msg.id}", exc_info=e)
-                    break # 에러난 부분에서 끊어서 다음 루프에서 다시 시도
+                    break  # 에러난 부분에서 끊어서 다음 루프에서 다시 시도
 
             await asyncio.sleep(wait_duration)
         except Exception as e:
