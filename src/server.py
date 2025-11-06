@@ -95,7 +95,7 @@ async def check_recent_message():
             fetched_messages = [
                 msg
                 for msg in fetched_messages
-                if msg.author.userName in config.characters._twitter_handle_map.keys()
+                if msg.author.userName.lower() in config.characters._twitter_handle_map.keys()
             ]
             logger.info(
                 f"{len(fetched_messages)} tweets are from target accounts after filtering."
