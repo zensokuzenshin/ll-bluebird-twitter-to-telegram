@@ -1,438 +1,246 @@
-"""
-Translation module for converting tweets from Japanese to Korean.
-Uses the translation prompt defined in prompts/translate.prompt.
-Supports multiple LLM providers with fallback and retry logic.
+"""Japanese to Korean tweet translation, via prompts/translate.prompt.
+
+Several LLM providers are tried in turn so a rate limit or outage at one does
+not stall the forwarder.
 """
 
 import asyncio
 import logging
-import os
 import random
+import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Protocol, Tuple, Union
+from functools import cache
+from pathlib import Path
 
-# Import for Anthropic provider
-try:
-    from anthropic import (
-        APIError as AnthropicAPIError,
-    )
-    from anthropic import (
-        APIStatusError as AnthropicAPIStatusError,
-    )
-    from anthropic import AsyncAnthropic
-    from anthropic import RateLimitError as AnthropicRateLimitError
-    from anthropic.types import MessageParam
-
-    ANTHROPIC_AVAILABLE = True
-except ImportError:
-    ANTHROPIC_AVAILABLE = False
-
-# Import for OpenAI provider
-try:
-    from openai import (
-        APIError as OpenAIAPIError,
-    )
-    from openai import (
-        APIStatusError as OpenAIAPIStatusError,
-    )
-    from openai import AsyncOpenAI
-    from openai import RateLimitError as OpenAIRateLimitError
-    from openai.types.chat import ChatCompletionMessageParam
-
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
+from anthropic import APIStatusError as AnthropicAPIStatusError
+from anthropic import AsyncAnthropic
+from anthropic import RateLimitError as AnthropicRateLimitError
+from anthropic.types import MessageParam
+from openai import APIStatusError as OpenAIAPIStatusError
+from openai import AsyncOpenAI
+from openai import RateLimitError as OpenAIRateLimitError
 
 import config
+import telemetry
 
-# Configure logging
 logger = logging.getLogger(__name__)
+
+_PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts" / "translate.prompt"
+# Only a ceiling, never a charge, and the current models spend a chunk of it
+# reasoning before they emit anything. Keep it well clear of a long tweet.
+_MAX_TOKENS = 4096
 
 
 class TranslationError(Exception):
     """Exception raised for errors during translation."""
 
-    pass
-
 
 class RateLimitedError(TranslationError):
     """Exception raised when API rate limits are hit."""
 
-    pass
+
+@cache
+def _prompt_template() -> str:
+    try:
+        return _PROMPT_PATH.read_text(encoding="utf-8")
+    except OSError as e:
+        raise TranslationError(f"Failed to load translation prompt: {e}") from e
+
+
+def _is_rate_limited(error: Exception) -> bool:
+    """Both SDKs raise a dedicated error, but only for a clean 429."""
+    if isinstance(error, AnthropicRateLimitError | OpenAIRateLimitError):
+        return True
+    return (
+        isinstance(error, AnthropicAPIStatusError | OpenAIAPIStatusError)
+        and error.status_code == 429
+    )
 
 
 class LLMProvider(ABC):
-    """Abstract base class for LLM providers."""
+    """A single chat model, with retry handling shared across providers."""
+
+    name: str
+
+    def __init__(self, model_name: str):
+        self.model_name = model_name
+
+    def __str__(self) -> str:
+        return f"{self.name}:{self.model_name}"
 
     @abstractmethod
+    async def complete(self, prompt: str) -> str:
+        """Send `prompt` to the model and return its reply."""
+
+    def _count(self, outcome: str) -> None:
+        telemetry.translations.add(
+            1, {"provider": self.name, "model": self.model_name, "outcome": outcome}
+        )
+
     async def translate(
         self,
         text: str,
-        prompt_template: str,
         max_retries: int = 3,
         initial_backoff: float = 1.0,
     ) -> str:
-        """Translate text using the LLM provider."""
-        pass
+        """Raises RateLimitedError once retries run out, TranslationError otherwise."""
+        prompt = _prompt_template().replace("{{TEXT}}", text)
+        backoff = initial_backoff
+        attempt = 0
+        started = time.monotonic()
 
-    @classmethod
-    def create(cls, provider_name: str, model_name: str) -> Optional["LLMProvider"]:
-        """Factory method to create the appropriate LLM provider."""
-        if provider_name.lower() == "anthropic" and ANTHROPIC_AVAILABLE:
-            return AnthropicProvider(model_name)
-        elif provider_name.lower() == "openai" and OPENAI_AVAILABLE:
-            return OpenAIProvider(model_name)
-        return None
+        while True:
+            try:
+                logger.info("Translating text using %s", self)
+                with telemetry.tracer.start_as_current_span(
+                    "translate",
+                    attributes={
+                        "gen_ai.system": self.name,
+                        "gen_ai.request.model": self.model_name,
+                    },
+                ):
+                    translated = await self.complete(prompt)
+            except TranslationError:
+                self._count("error")
+                raise
+            except Exception as e:
+                if not _is_rate_limited(e):
+                    self._count("error")
+                    logger.error("%s failed with a non-retryable error: %s", self, e)
+                    raise TranslationError(f"{self} translation failed: {e}") from e
+
+                if attempt >= max_retries:
+                    self._count("rate_limited")
+                    logger.error(
+                        "%s still rate limited after %d retries: %s", self, attempt, e
+                    )
+                    raise RateLimitedError(
+                        f"{self} translation failed due to rate limits: {e}"
+                    ) from e
+
+                attempt += 1
+                delay = backoff * random.uniform(0.8, 1.2)  # ±20% jitter
+                logger.warning(
+                    "Rate limited by %s. Retrying (%d/%d) in %.2f seconds...",
+                    self,
+                    attempt,
+                    max_retries,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                backoff *= 2
+            else:
+                self._count("success")
+                telemetry.translation_duration.record(
+                    time.monotonic() - started,
+                    {"provider": self.name, "model": self.model_name},
+                )
+                return translated
+
+
+@cache
+def _anthropic_client() -> AsyncAnthropic:
+    if not config.common.ANTHROPIC_API_KEY:
+        raise TranslationError(
+            "No Anthropic API key provided. Set ANTHROPIC_API_KEY environment variable."
+        )
+    return AsyncAnthropic(api_key=config.common.ANTHROPIC_API_KEY)
+
+
+@cache
+def _openai_client() -> AsyncOpenAI:
+    if not config.common.OPENAI_API_KEY:
+        raise TranslationError(
+            "No OpenAI API key provided. Set OPENAI_API_KEY environment variable."
+        )
+    return AsyncOpenAI(api_key=config.common.OPENAI_API_KEY)
 
 
 class AnthropicProvider(LLMProvider):
     """Anthropic Claude LLM provider."""
 
-    def __init__(self, model_name: str):
-        self.model_name = model_name
-        self.api_key = config.common.ANTHROPIC_API_KEY
-        if not self.api_key:
-            raise TranslationError(
-                "No Anthropic API key provided. Set ANTHROPIC_API_KEY environment variable."
-            )
+    name = "anthropic"
 
-    async def translate(
-        self,
-        text: str,
-        prompt_template: str,
-        max_retries: int = 3,
-        initial_backoff: float = 1.0,
-    ) -> str:
-        """
-        Translate text using Anthropic's Claude API.
-
-        Args:
-            text: The text to translate
-            prompt_template: The prompt template to use
-            max_retries: Maximum number of retry attempts for rate limit errors
-            initial_backoff: Initial backoff time in seconds
-
-        Returns:
-            The translated text
-
-        Raises:
-            TranslationError: If translation fails after all retry attempts
-            RateLimitedError: If rate limits are hit and retries are exhausted
-        """
-        if not ANTHROPIC_AVAILABLE:
-            raise TranslationError(
-                "Anthropic package is not installed. Install with 'pip install anthropic'."
-            )
-
-        # Create Anthropic client
-        client = AsyncAnthropic(api_key=self.api_key)
-
-        # Fill in the template with the text to translate
-        prompt = prompt_template.replace("{{TEXT}}", text)
-
-        # Initialize retry parameters
-        retry_count = 0
-        backoff_time = initial_backoff
-
-        while True:
-            try:
-                logger.info(
-                    f"Translating text using Anthropic model: {self.model_name}"
-                )
-
-                message = await client.messages.create(
-                    model=self.model_name,
-                    max_tokens=1024,
-                    messages=[MessageParam(role="user", content=prompt)],
-                )
-
-                # Extract the translated text from the response
-                if not message.content:
-                    logger.error("No content in Anthropic response")
-                    raise TranslationError("No translation returned from Anthropic API")
-
-                # Get the text from the first content block
-                for content_block in message.content:
-                    if content_block.type == "text":
-                        return content_block.text
-
-                # If we didn't find any text blocks
-                logger.error("No text content in Anthropic response")
-                raise TranslationError("No translation text in Anthropic response")
-
-            except (AnthropicRateLimitError, AnthropicAPIStatusError) as e:
-                # Check if this is a rate limit error (either direct RateLimitError or status code 429)
-                is_rate_limit = isinstance(e, AnthropicRateLimitError) or (
-                    isinstance(e, AnthropicAPIStatusError) and e.status_code == 429
-                )
-
-                if is_rate_limit and retry_count < max_retries:
-                    retry_count += 1
-                    logger.warning(
-                        f"Rate limit error from Anthropic API. Retrying ({retry_count}/{max_retries}) "
-                        f"in {backoff_time:.2f} seconds..."
-                    )
-
-                    # Exponential backoff with jitter
-                    jitter = random.uniform(0.8, 1.2)  # ±20% jitter
-                    await asyncio.sleep(backoff_time * jitter)
-
-                    # Increase backoff for next attempt (exponential)
-                    backoff_time *= 2
-                elif is_rate_limit:
-                    # We've exhausted retries for rate limits
-                    logger.error(
-                        f"Anthropic translation failed after {retry_count} retries due to rate limits: {str(e)}"
-                    )
-                    raise RateLimitedError(
-                        f"Anthropic translation failed due to rate limits: {str(e)}"
-                    )
-                else:
-                    # Not a rate limit error
-                    logger.error(f"Anthropic API error: {str(e)}")
-                    raise TranslationError(
-                        f"Anthropic translation failed with API error: {str(e)}"
-                    )
-
-            except Exception as e:
-                # Not a rate limit error, don't retry
-                logger.error(
-                    f"Anthropic translation failed with non-retryable error: {str(e)}"
-                )
-                raise TranslationError(f"Anthropic translation failed: {str(e)}")
+    async def complete(self, prompt: str) -> str:
+        message = await _anthropic_client().messages.create(
+            model=self.model_name,
+            max_tokens=_MAX_TOKENS,
+            messages=[MessageParam(role="user", content=prompt)],
+        )
+        # A truncated translation still looks like a valid one, so refuse it
+        # here and let the caller fall through to the next provider.
+        if message.stop_reason == "max_tokens":
+            raise TranslationError("Anthropic hit max_tokens mid-translation")
+        for block in message.content:
+            if block.type == "text":
+                return block.text
+        raise TranslationError("No text content in Anthropic response")
 
 
 class OpenAIProvider(LLMProvider):
     """OpenAI GPT LLM provider."""
 
-    def __init__(self, model_name: str):
-        self.model_name = model_name
-        self.api_key = config.common.OPENAI_API_KEY
-        if not self.api_key:
-            raise TranslationError(
-                "No OpenAI API key provided. Set OPENAI_API_KEY environment variable."
-            )
+    name = "openai"
 
-    async def translate(
-        self,
-        text: str,
-        prompt_template: str,
-        max_retries: int = 3,
-        initial_backoff: float = 1.0,
-    ) -> str:
-        """
-        Translate text using OpenAI's API.
+    async def complete(self, prompt: str) -> str:
+        completion = await _openai_client().chat.completions.create(
+            model=self.model_name,
+            max_completion_tokens=_MAX_TOKENS,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        if not completion.choices:
+            raise TranslationError("No choices in OpenAI response")
 
-        Args:
-            text: The text to translate
-            prompt_template: The prompt template to use
-            max_retries: Maximum number of retry attempts for rate limit errors
-            initial_backoff: Initial backoff time in seconds
+        choice = completion.choices[0]
+        # Reasoning models can spend the whole budget thinking and come back
+        # with finish_reason=length and empty content; that is not a translation.
+        if choice.finish_reason == "length":
+            raise TranslationError("OpenAI hit the token limit mid-translation")
+        if not (choice.message.content or "").strip():
+            raise TranslationError("OpenAI returned an empty translation")
+        return choice.message.content
 
-        Returns:
-            The translated text
 
-        Raises:
-            TranslationError: If translation fails after all retry attempts
-            RateLimitedError: If rate limits are hit and retries are exhausted
-        """
-        if not OPENAI_AVAILABLE:
-            raise TranslationError(
-                "OpenAI package is not installed. Install with 'pip install openai'."
-            )
-
-        # Create OpenAI client
-        client = AsyncOpenAI(api_key=self.api_key)
-
-        # Fill in the template with the text to translate
-        prompt = prompt_template.replace("{{TEXT}}", text)
-
-        # Initialize retry parameters
-        retry_count = 0
-        backoff_time = initial_backoff
-
-        while True:
-            try:
-                logger.info(f"Translating text using OpenAI model: {self.model_name}")
-
-                completion = await client.chat.completions.create(
-                    model=self.model_name,
-                    max_completion_tokens=1024,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-
-                # Extract the translated text from the response
-                if not completion.choices:
-                    logger.error("No choices in OpenAI response")
-                    raise TranslationError("No translation returned from OpenAI API")
-
-                return completion.choices[0].message.content or ""
-
-            except (OpenAIRateLimitError, OpenAIAPIStatusError) as e:
-                # Check if this is a rate limit error (either direct RateLimitError or status code 429)
-                is_rate_limit = isinstance(e, OpenAIRateLimitError) or (
-                    isinstance(e, OpenAIAPIStatusError) and e.status_code == 429
-                )
-
-                if is_rate_limit and retry_count < max_retries:
-                    retry_count += 1
-                    logger.warning(
-                        f"Rate limit error from OpenAI API. Retrying ({retry_count}/{max_retries}) "
-                        f"in {backoff_time:.2f} seconds..."
-                    )
-
-                    # Exponential backoff with jitter
-                    jitter = random.uniform(0.8, 1.2)  # ±20% jitter
-                    await asyncio.sleep(backoff_time * jitter)
-
-                    # Increase backoff for next attempt (exponential)
-                    backoff_time *= 2
-                elif is_rate_limit:
-                    # We've exhausted retries for rate limits
-                    logger.error(
-                        f"OpenAI translation failed after {retry_count} retries due to rate limits: {str(e)}"
-                    )
-                    raise RateLimitedError(
-                        f"OpenAI translation failed due to rate limits: {str(e)}"
-                    )
-                else:
-                    # Not a rate limit error
-                    logger.error(f"OpenAI API error: {str(e)}")
-                    raise TranslationError(
-                        f"OpenAI translation failed with API error: {str(e)}"
-                    )
-
-            except Exception as e:
-                # Not a rate limit error, don't retry
-                logger.error(
-                    f"OpenAI translation failed with non-retryable error: {str(e)}"
-                )
-                raise TranslationError(f"OpenAI translation failed: {str(e)}")
+_PROVIDERS: dict[str, type[LLMProvider]] = {
+    AnthropicProvider.name: AnthropicProvider,
+    OpenAIProvider.name: OpenAIProvider,
+}
 
 
 async def translate(
     text: str,
-    api_key: Optional[str] = None,
-    model: Optional[str] = None,
     max_retries: int = 3,
     initial_backoff: float = 1.0,
-) -> (str, Optional[str]):
+) -> tuple[str, str | None]:
+    """Translate Japanese to Korean, trying each configured model in turn.
+
+    Returns the translation and the "provider:model" behind it; the provider
+    is None only when there was nothing to translate. Raises TranslationError
+    if every configured provider failed.
     """
-    Translate text from Japanese to Korean using configured LLM providers.
-    Will try each provider in order until one succeeds or all fail.
-
-    Args:
-        text: The Japanese text to translate
-        api_key: API key for the service (defaults to appropriate config values)
-        model: Model name to use for translation (defaults to config.common.TRANSLATION_MODEL)
-        max_retries: Maximum number of retry attempts for rate limit errors (default: 3)
-        initial_backoff: Initial backoff time in seconds (default: 1.0)
-
-    Returns:
-        The translated Korean text
-
-    Raises:
-        TranslationError: If translation fails after all retry attempts
-    """
-    # Validate inputs
     if not text or not text.strip():
         return "", None
 
-    # Backward compatibility for direct model specification
-    if model and not api_key:
-        # If a model is specified directly but no API key, assume it's an Anthropic model
-        # and add it to the front of the models list just for this request
-        model_spec = f"anthropic:{model}"
-        models_to_try = [model_spec] + config.common.TRANSLATION_MODELS
-    else:
-        # Use the configured models list
-        models_to_try = config.common.TRANSLATION_MODELS
-
-    # Load translation prompt
-    try:
-        prompt_path = os.path.join(
-            os.path.dirname(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            ),
-            "prompts",
-            "translate.prompt",
-        )
-
-        with open(prompt_path, "r", encoding="utf-8") as f:
-            prompt_template = f.read()
-
-    except Exception as e:
-        logger.error(f"Failed to load translation prompt: {str(e)}")
-        raise TranslationError(f"Failed to load translation prompt: {str(e)}")
-
-    # Try each model in order
     errors = []
 
-    for model_spec in models_to_try:
-        try:
-            # Parse provider:model format
-            if ":" not in model_spec:
-                logger.warning(
-                    f"Invalid model specification '{model_spec}'. Must be in 'provider:model' format."
-                )
-                continue
-
-            provider_name, model_name = model_spec.split(":", 1)
-
-            # Check for API key override
-            if api_key and provider_name.lower() == "anthropic":
-                # For backward compatibility
-                custom_api_key = api_key
-            else:
-                custom_api_key = None
-
-            # Create provider instance
-            provider = LLMProvider.create(provider_name, model_name)
-            if not provider:
-                logger.warning(
-                    f"Provider '{provider_name}' is not available. Skipping."
-                )
-                continue
-
-            # If api_key was provided and it's compatible with this provider, use it
-            if custom_api_key and isinstance(provider, AnthropicProvider):
-                provider.api_key = custom_api_key
-
-            # Try to translate with this provider
-            try:
-                translated_text = await provider.translate(
-                    text=text,
-                    prompt_template=prompt_template,
-                    max_retries=max_retries,
-                    initial_backoff=initial_backoff,
-                )
-                return translated_text, f"{provider_name}:{model_name}"
-
-            except RateLimitedError as e:
-                # Rate limit errors should cause us to try the next provider
-                logger.warning(
-                    f"Rate limited with {provider_name}:{model_name}. Trying next provider."
-                )
-                errors.append(f"{provider_name}:{model_name} - Rate limited: {str(e)}")
-                continue
-
-            except TranslationError as e:
-                # Other translation errors should also be retried with the next provider
-                logger.warning(
-                    f"Translation failed with {provider_name}:{model_name}: {str(e)}. Trying next provider."
-                )
-                errors.append(f"{provider_name}:{model_name} - Error: {str(e)}")
-                continue
-
-        except Exception as e:
-            # General errors with this provider, try the next one
+    for model_spec in config.common.TRANSLATION_MODELS:
+        provider_name, _, model_name = model_spec.partition(":")
+        provider_class = _PROVIDERS.get(provider_name.lower())
+        if not model_name or provider_class is None:
             logger.warning(
-                f"Error with provider {model_spec}: {str(e)}. Trying next provider."
+                "Skipping %r: expected a 'provider:model' pair with provider in %s",
+                model_spec,
+                sorted(_PROVIDERS),
             )
-            errors.append(f"{model_spec} - Error: {str(e)}")
             continue
 
-    # If we get here, all providers failed
-    error_message = "All translation providers failed: " + "; ".join(errors)
-    logger.error(error_message)
-    raise TranslationError(error_message)
+        provider = provider_class(model_name)
+        try:
+            return await provider.translate(text, max_retries, initial_backoff), str(
+                provider
+            )
+        except TranslationError as e:
+            logger.warning("%s failed: %s. Trying next provider.", provider, e)
+            errors.append(f"{provider} - {e}")
+
+    raise TranslationError("All translation providers failed: " + "; ".join(errors))

@@ -1,40 +1,26 @@
-from typing import List, Optional
-
-from pydantic import BaseModel
+from ._base import ApiModel
 
 
-class Hashtag(BaseModel):
-    indices: Optional[List[int]] = None
-    text: Optional[str] = None
-
-    class Config:
-        extra = "allow"
+class Hashtag(ApiModel):
+    indices: list[int] | None = None
+    text: str | None = None
 
 
-class Url(BaseModel):
-    display_url: Optional[str] = None
-    expanded_url: Optional[str] = None
-    indices: Optional[List[int]] = None
-    url: Optional[str] = None
-
-    class Config:
-        extra = "allow"
+class Url(ApiModel):
+    display_url: str | None = None
+    expanded_url: str | None = None
+    indices: list[int] | None = None
+    url: str | None = None
 
 
-class UserMention(BaseModel):
-    id_str: Optional[str] = None
-    name: Optional[str] = None
-    screen_name: Optional[str] = None
-    indices: Optional[List[int]] = None
-
-    class Config:
-        extra = "allow"
+class UserMention(ApiModel):
+    id_str: str | None = None
+    name: str | None = None
+    screen_name: str | None = None
+    indices: list[int] | None = None
 
 
-class TweetEntities(BaseModel):
-    hashtags: Optional[List[Hashtag]] = None
-    urls: Optional[List[Url]] = None
-    user_mentions: Optional[List[UserMention]] = None
-
-    class Config:
-        extra = "allow"
+class TweetEntities(ApiModel):
+    hashtags: list[Hashtag] | None = None
+    urls: list[Url] | None = None
+    user_mentions: list[UserMention] | None = None

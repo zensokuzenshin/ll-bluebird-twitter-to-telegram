@@ -1,28 +1,24 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/e06158e58f3adee28b139e9c2bcfcc41f8625b46";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
   outputs =
-    { nixpkgs, flake-utils, ... }@inputs:
+    { nixpkgs, flake-utils, ... }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = import nixpkgs {
-          inherit system;
-          config = {
-            allowUnfree = true;
-            allowUnfreePredicate = (_: true);
-          };
-        };
+        pkgs = import nixpkgs { inherit system; };
       in
       {
-        devShell = pkgs.mkShell {
-          buildInputs = with pkgs; [
-            python313Full
-            black
+        devShells.default = pkgs.mkShell {
+          # ruff covers both formatting and linting, so black is gone.
+          # Python packages come from uv, not nixpkgs.
+          packages = with pkgs; [
+            python314
             ruff
+            uv
           ];
         };
       }

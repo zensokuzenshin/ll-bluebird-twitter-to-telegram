@@ -1,16 +1,14 @@
 import logging
 
 import config
+import telemetry
 from logging_handlers import setup_telegram_logger
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+# Must run before any handler is attached: it replaces the root handlers.
+telemetry.setup_logging()
+
 logger = logging.getLogger(__name__)
 
-# Set up Telegram error logger if credentials are provided
 if config.common.TELEGRAM_ERROR_BOT_TOKEN and config.common.TELEGRAM_ERROR_CHAT_ID:
     setup_telegram_logger(
         config.common.TELEGRAM_ERROR_BOT_TOKEN,

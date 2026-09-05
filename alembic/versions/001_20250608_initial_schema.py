@@ -7,10 +7,9 @@ Create Date: 2025-06-08 00:00:00.000000
 """
 
 import logging
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
-
 from alembic import op
 
 # Configure logger
@@ -18,9 +17,9 @@ logger = logging.getLogger("alembic.migration")
 
 # revision identifiers, used by Alembic.
 revision: str = "81f4a98a9213"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -84,7 +83,7 @@ def downgrade() -> None:
         )
         logger.info("Dropped indexes from translated_messages table")
     except Exception as e:
-        logger.warning(f"Error dropping indexes: {str(e)}")
+        logger.warning("Error dropping indexes: %s", e)
 
     # Drop the table - same for both databases with UUID primary key
     op.drop_table("translated_messages")

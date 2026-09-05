@@ -1,37 +1,32 @@
-from typing import List, Optional
-
-from pydantic import BaseModel
+from ._base import ApiModel
 
 
-class UserInfo(BaseModel):
-    type: Optional[str] = None
-    userName: Optional[str] = None
-    url: Optional[str] = None
-    id: Optional[str] = None
-    name: Optional[str] = None
-    isBlueVerified: Optional[bool] = None
-    verifiedType: Optional[str] = None
-    profilePicture: Optional[str] = None
-    coverPicture: Optional[str] = None
-    description: Optional[str] = None
-    location: Optional[str] = None
-    followers: Optional[int] = None
-    following: Optional[int] = None
-    canDm: Optional[bool] = None
-    createdAt: Optional[str] = None
-    favouritesCount: Optional[int] = None
-    hasCustomTimelines: Optional[bool] = None
-    isTranslator: Optional[bool] = None
-    mediaCount: Optional[int] = None
-    statusesCount: Optional[int] = None
-    withheldInCountries: Optional[List[str]] = None
-    possiblySensitive: Optional[bool] = None
-    pinnedTweetIds: Optional[List[str]] = None
-    isAutomated: Optional[bool] = None
-    automatedBy: Optional[str] = None
-    unavailable: Optional[bool] = None
-    message: Optional[str] = None
-    unavailableReason: Optional[str] = None
-
-    class Config:
-        extra = "allow"
+class UserInfo(ApiModel):
+    type: str | None = None
+    userName: str | None = None
+    url: str | None = None
+    id: str | None = None
+    name: str | None = None
+    isBlueVerified: bool | None = None
+    verifiedType: str | None = None
+    profilePicture: str | None = None
+    coverPicture: str | None = None
+    description: str | None = None
+    location: str | None = None
+    followers: int | None = None
+    following: int | None = None
+    canDm: bool | None = None
+    createdAt: str | None = None
+    favouritesCount: int | None = None
+    hasCustomTimelines: bool | None = None
+    isTranslator: bool | None = None
+    mediaCount: int | None = None
+    statusesCount: int | None = None
+    withheldInCountries: list[str] | None = None
+    possiblySensitive: bool | None = None
+    pinnedTweetIds: list[str] | None = None
+    isAutomated: bool | None = None
+    automatedBy: str | None = None
+    unavailable: bool | None = None
+    message: str | None = None
+    unavailableReason: str | None = None

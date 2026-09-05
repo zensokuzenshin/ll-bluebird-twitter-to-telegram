@@ -1,9 +1,9 @@
 import os
-from typing import Dict, List
+from collections.abc import Iterable, Iterator
 
 from .types import Character
 
-_characters: List[str] = [
+_CHARACTER_NAMES = (
     "Polka",
     "Mai",
     "Akira",
@@ -14,50 +14,60 @@ _characters: List[str] = [
     "Aurora",
     "Midori",
     "Shion",
-]
+)
 
 
 class _Characters:
-    _character_config: Dict[str, Character] = {}
-    _twitter_handle_map: Dict[str, Character] = {}
+    """Lookup by character name or Twitter handle, both case-insensitive."""
 
-    def __setattr__(self, key: str, value: Character):
-        self._character_config[key.lower()] = value
-        self._twitter_handle_map[value.twitter_handle.lower()] = value
+    def __init__(self, characters: Iterable[Character]) -> None:
+        characters = tuple(characters)
+        self._by_name = {c.name.lower(): c for c in characters}
+        self._by_handle = {c.twitter_handle.lower(): c for c in characters}
 
-    def __getattr__(self, key: str) -> Character:
-        return self._character_config[key.lower()]
+    def __getattr__(self, name: str) -> Character:
+        # Bail out before touching self._by_name, or a lookup during __init__
+        # would recurse forever.
+        if name.startswith("_"):
+            raise AttributeError(name)
+        try:
+            return self._by_name[name.lower()]
+        except KeyError:
+            raise AttributeError(name) from None
 
-    def __getitem__(self, item: str) -> Character:
-        item = item.lower()
-        if item in self._twitter_handle_map.keys():
-            return self._twitter_handle_map[item]
-        else:
-            return self._character_config[item]
+    def __getitem__(self, key: str) -> Character:
+        key = key.lower()
+        if key in self._by_handle:
+            return self._by_handle[key]
+        return self._by_name[key]
+
+    def __iter__(self) -> Iterator[Character]:
+        return iter(self._by_name.values())
+
+    def __len__(self) -> int:
+        return len(self._by_name)
+
+    @property
+    def twitter_handles(self) -> frozenset[str]:
+        """Lowercased: the search API echoes handles back with varying casing."""
+        return frozenset(self._by_handle)
 
 
-characters = _Characters()
+def _load(name: str) -> Character:
+    def required(suffix: str) -> str:
+        key = f"Character_{name}_{suffix}".upper()
+        value = os.environ.get(key)
+        if not value:
+            raise ValueError(f"{key} is not defined")
+        return value
 
-for character in _characters:
-    twitter_handle = os.environ.get(
-        f"Character_{character}_Twitter_Handle".upper(), None
+    return Character(
+        name=name,
+        twitter_handle=required("Twitter_Handle"),
+        telegram_bot_token=required("Telegram_Bot_Token"),
     )
-    if twitter_handle is None:
-        raise ValueError(f"Twitter Handle of {character} is not defined")
-    telegram_bot_token = os.environ.get(
-        f"Character_{character}_Telegram_Bot_Token".upper(), None
-    )
-    if telegram_bot_token is None:
-        raise ValueError(f"Telegram Bot Token of {character} is not defined")
 
-    setattr(
-        characters,
-        character,
-        Character(
-            name=character,
-            twitter_handle=twitter_handle,
-            telegram_bot_token=telegram_bot_token,
-        ),
-    )
+
+characters = _Characters(_load(name) for name in _CHARACTER_NAMES)
 
 __all__ = ["characters"]

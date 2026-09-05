@@ -1,47 +1,53 @@
 import datetime
 import logging
-from typing import List, Optional
 
-from pydantic import BaseModel, computed_field
-
+from ._base import ApiModel
 from .tweet_entities import TweetEntities
 from .user_info import UserInfo
 
 logger = logging.getLogger(__name__)
 
+# e.g. "Sun Jun 08 12:34:56 +0000 2025"
+_CREATED_AT_FORMAT = "%a %b %d %H:%M:%S %z %Y"
 
-class Tweet(BaseModel):
-    type: Optional[str] = None
-    id: Optional[str] = None
-    url: Optional[str] = None
-    text: Optional[str] = None
-    source: Optional[str] = None
-    retweetCount: Optional[int] = None
-    replyCount: Optional[int] = None
-    likeCount: Optional[int] = None
-    quoteCount: Optional[int] = None
-    viewCount: Optional[int] = None
-    createdAt: Optional[str] = None
-    lang: Optional[str] = None
-    bookmarkCount: Optional[int] = None
-    isReply: Optional[bool] = None
-    inReplyToId: Optional[str] = None
-    conversationId: Optional[str] = None
-    displayTextRange: Optional[List[int]] = None
-    inReplyToUserId: Optional[str] = None
-    inReplyToUsername: Optional[str] = None
-    author: Optional[UserInfo] = None
-    entities: Optional[TweetEntities] = None
-    quoted_tweet: Optional["Tweet"] = None
-    retweeted_tweet: Optional["Tweet"] = None
-    isLimitedReply: Optional[bool] = None
 
-    @computed_field
+class Tweet(ApiModel):
+    type: str | None = None
+    id: str | None = None
+    url: str | None = None
+    text: str | None = None
+    source: str | None = None
+    retweetCount: int | None = None
+    replyCount: int | None = None
+    likeCount: int | None = None
+    quoteCount: int | None = None
+    viewCount: int | None = None
+    createdAt: str | None = None
+    lang: str | None = None
+    bookmarkCount: int | None = None
+    isReply: bool | None = None
+    inReplyToId: str | None = None
+    conversationId: str | None = None
+    displayTextRange: list[int] | None = None
+    inReplyToUserId: str | None = None
+    inReplyToUsername: str | None = None
+    author: UserInfo | None = None
+    entities: TweetEntities | None = None
+    quoted_tweet: Tweet | None = None
+    retweeted_tweet: Tweet | None = None
+    isLimitedReply: bool | None = None
+
     @property
-    def created_at_dt(self) -> Optional[datetime.datetime]:
-        if self.createdAt:
-            return datetime.datetime.strptime(self.createdAt, "%a %b %d %H:%M:%S %z %Y")
-        return None
-
-    class Config:
-        extra = "allow"
+    def created_at_dt(self) -> datetime.datetime | None:
+        """Not a `computed_field`: including it in `model_dump()` would make
+        the dump impossible to feed back into the model."""
+        if not self.createdAt:
+            return None
+        try:
+            # _CREATED_AT_FORMAT does carry %z; ruff cannot see through the constant
+            return datetime.datetime.strptime(self.createdAt, _CREATED_AT_FORMAT)  # noqa: DTZ007
+        except ValueError:
+            logger.warning(
+                "Tweet %s has an unparseable createdAt: %r", self.id, self.createdAt
+            )
+            return None

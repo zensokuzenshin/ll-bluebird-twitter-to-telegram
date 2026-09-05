@@ -1,15 +1,17 @@
 import os
-from typing import Literal, Optional
+from typing import Any, Literal
 
 import httpx
 
 from .types import AdvancedSearchResponse, Tweet, UserInfo
 
+__all__ = ["AdvancedSearchResponse", "Tweet", "TwitterAPI", "UserInfo"]
+
 
 class TwitterAPI:
     BASE_URL = "https://api.twitterapi.io"
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: str | None = None):
         self.api_key = api_key or os.environ.get("TWITTERAPI_IO_API_KEY")
         if not self.api_key:
             raise ValueError(
@@ -20,76 +22,44 @@ class TwitterAPI:
             base_url=self.BASE_URL, headers={"X-API-Key": self.api_key}, timeout=30.0
         )
 
-    async def get_user_info(self, username: str) -> UserInfo:
-        """
-        Get user information by username.
-
-        Args:
-            username: Twitter username (without @)
-
-        Returns:
-            UserInfo object with user details
-
-        Raises:
-            httpx.HTTPStatusError: If the API returns an error
-        """
-        response = await self.session.get(
-            "/twitter/user/info", params={"userName": username}
-        )
+    async def _get(self, path: str, params: dict[str, str]) -> dict[str, Any]:
+        """Raises httpx.HTTPStatusError carrying whatever detail the API gave."""
+        response = await self.session.get(path, params=params)
 
         if response.status_code != 200:
-            error_data = response.json()
+            try:
+                error = response.json()
+            except ValueError:
+                error = {}
             raise httpx.HTTPStatusError(
-                f"API error {error_data.get('error', response.status_code)}: {error_data.get('message', 'Unknown error')}",
+                f"API error {error.get('error', response.status_code)}: "
+                f"{error.get('message', 'Unknown error')}",
                 request=response.request,
                 response=response,
             )
 
-        data = response.json()
+        return response.json()
+
+    async def get_user_info(self, username: str) -> UserInfo:
+        """`username` is the handle without the leading @."""
+        data = await self._get("/twitter/user/info", {"userName": username})
         return UserInfo(**data.get("data", {}))
 
     async def advanced_search(
         self,
         query: str,
         query_type: Literal["Latest", "Top"] = "Latest",
-        cursor: Optional[str] = None,
+        cursor: str | None = None,
     ) -> AdvancedSearchResponse:
-        """
-        Perform advanced search for tweets.
-
-        Args:
-            query: Search query (e.g., "AI" OR "Twitter from:elonmusk")
-            query_type: "Latest" for most recent tweets or "Top" for popular tweets
-            cursor: Pagination cursor for fetching next page of results
-
-        Returns:
-            Response object containing tweets and pagination info
-
-        Raises:
-            httpx.HTTPStatusError: If the API returns an error
-        """
+        """Search tweets, e.g. `"AI" OR "Twitter" from:elonmusk`."""
         params = {"query": query, "queryType": query_type}
-
         if cursor:
             params["cursor"] = cursor
 
-        response = await self.session.get(
-            "/twitter/tweet/advanced_search", params=params
-        )
-
-        if response.status_code != 200:
-            error_data = response.json()
-            raise httpx.HTTPStatusError(
-                f"API error {error_data.get('error', response.status_code)}: {error_data.get('message', 'Unknown error')}",
-                request=response.request,
-                response=response,
-            )
-
-        data = response.json()
+        data = await self._get("/twitter/tweet/advanced_search", params)
         return AdvancedSearchResponse(**data)
 
     async def close(self):
-        """Close the HTTP session."""
         await self.session.aclose()
 
     async def __aenter__(self):

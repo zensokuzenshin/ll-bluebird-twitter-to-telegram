@@ -5,15 +5,13 @@ Utility functions for retrying database operations with exponential backoff.
 import asyncio
 import logging
 import random
-from typing import Any, Awaitable, Callable, List, Optional, Type, TypeVar
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import asyncpg
 
 # Configure module-specific logger
 logger = logging.getLogger(__name__)
-
-# Type variable for the return type of the retried function
-T = TypeVar("T")
 
 # Default retry configuration
 DEFAULT_MAX_RETRIES = 3
@@ -81,13 +79,13 @@ def is_retryable_error(e: Exception) -> bool:
         error_str = str(e).lower()
         for retry_msg in COCKROACHDB_RETRY_MESSAGES:
             if retry_msg.lower() in error_str:
-                logger.info(f"Detected CockroachDB retryable error: {error_str}")
+                logger.info("Detected CockroachDB retryable error: %s", error_str)
                 return True
 
     return False
 
 
-async def retry_with_backoff(
+async def retry_with_backoff[T](
     operation: Callable[..., Awaitable[T]],
     *args: Any,
     max_retries: int = DEFAULT_MAX_RETRIES,
@@ -95,7 +93,6 @@ async def retry_with_backoff(
     max_backoff: float = DEFAULT_MAX_BACKOFF,
     backoff_factor: float = DEFAULT_BACKOFF_FACTOR,
     jitter: float = DEFAULT_JITTER,
-    retryable_exceptions: Optional[List[Type[Exception]]] = None,
     **kwargs: Any,
 ) -> T:
     """
@@ -110,7 +107,6 @@ async def retry_with_backoff(
         max_backoff: Maximum backoff time in seconds
         backoff_factor: Multiplicative factor for backoff after each retry
         jitter: Random jitter factor to add to backoff (0.0-1.0)
-        retryable_exceptions: List of exception types that should trigger a retry
         **kwargs: Keyword arguments to pass to the operation
 
     Returns:
@@ -119,9 +115,6 @@ async def retry_with_backoff(
     Raises:
         The last encountered exception if all retries fail
     """
-    if retryable_exceptions is None:
-        retryable_exceptions = DEFAULT_RETRYABLE_EXCEPTIONS
-
     retries = 0
     last_exception = None
 
@@ -130,7 +123,10 @@ async def retry_with_backoff(
         try:
             if retries > 0:
                 logger.debug(
-                    f"Retry attempt {retries}/{max_retries} for operation {operation.__name__}"
+                    "Retry attempt %d/%d for operation %s",
+                    retries,
+                    max_retries,
+                    operation.__name__,
                 )
             return await operation(*args, **kwargs)
 
@@ -141,14 +137,17 @@ async def retry_with_backoff(
             if not is_retryable_error(e):
                 # Not a retryable exception, reraise immediately
                 logger.warning(
-                    f"Non-retryable exception in {operation.__name__}: {str(e)}"
+                    "Non-retryable exception in %s: %s", operation.__name__, e
                 )
                 raise
 
             # Check if we've reached max retries
             if retries >= max_retries:
                 logger.error(
-                    f"Max retries ({max_retries}) reached for {operation.__name__}: {str(e)}"
+                    "Max retries (%d) reached for %s: %s",
+                    max_retries,
+                    operation.__name__,
+                    e,
                 )
                 raise
 
@@ -180,8 +179,12 @@ async def retry_with_backoff(
             )  # Ensure positive backoff
 
             logger.warning(
-                f"Retryable error in {operation.__name__}: {str(e)}. "
-                f"Retrying in {final_backoff:.3f}s (attempt {retries + 1}/{max_retries})"
+                "Retryable error in %s: %s. Retrying in %.3fs (attempt %d/%d)",
+                operation.__name__,
+                e,
+                final_backoff,
+                retries + 1,
+                max_retries,
             )
 
             # Wait before retrying
@@ -197,7 +200,7 @@ async def retry_with_backoff(
     raise RuntimeError("Unexpected error in retry logic")
 
 
-async def retry_db_operation(
+async def retry_db_operation[T](
     operation: Callable[..., Awaitable[T]], *args: Any, **kwargs: Any
 ) -> T:
     """

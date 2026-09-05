@@ -1,7 +1,14 @@
-.venv/
+.venv
 .direnv/
 .envrc
+.git/
+.github/
 .gitignore
+.idea/
+.ruff_cache/
+.claude/
+__pycache__/
+*.py[oc]
 Dockerfile
 CLAUDE.md
 flake.lock
