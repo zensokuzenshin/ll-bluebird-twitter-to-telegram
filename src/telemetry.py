@@ -32,7 +32,7 @@ from opentelemetry.exporter.prometheus import PrometheusMetricReader
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation, View
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import TracerProvider, sampling
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from prometheus_client import start_http_server
 
@@ -106,6 +106,41 @@ def set_leader(is_leader: bool) -> None:
     _is_leader = is_leader
 
 
+class _RootedInUnitOfWork(sampling.Sampler):
+    """Drop client spans that would otherwise begin a trace of their own.
+
+    Liveness probes and connection-pool warm-up issue queries outside any span
+    of ours, and the asyncpg instrumentor has no suppression hook, so without
+    this every SET/BEGIN/COMMIT they run is exported as a separate root trace
+    and buries the poll cycles.
+    """
+
+    def __init__(self, delegate: sampling.Sampler):
+        self._delegate = delegate
+
+    def should_sample(
+        self,
+        parent_context=None,
+        trace_id=0,
+        name="",
+        kind=None,
+        attributes=None,
+        links=None,
+        trace_state=None,
+    ) -> sampling.SamplingResult:
+        parent = trace.get_current_span(parent_context).get_span_context()
+        if not parent.is_valid and kind is trace.SpanKind.CLIENT:
+            return sampling.SamplingResult(
+                sampling.Decision.DROP, attributes, trace_state
+            )
+        return self._delegate.should_sample(
+            parent_context, trace_id, name, kind, attributes, links, trace_state
+        )
+
+    def get_description(self) -> str:
+        return f"RootedInUnitOfWork({self._delegate.get_description()})"
+
+
 class JsonLogFormatter(logging.Formatter):
     """One JSON object per line, with the current span's IDs when inside one."""
 
@@ -163,7 +198,10 @@ def setup_opentelemetry() -> None:
     # Also merges OTEL_RESOURCE_ATTRIBUTES from the environment.
     resource = Resource.create({SERVICE_NAME: service_name})
 
-    tracer_provider = TracerProvider(resource=resource)
+    tracer_provider = TracerProvider(
+        resource=resource,
+        sampler=_RootedInUnitOfWork(sampling.ParentBased(sampling.ALWAYS_ON)),
+    )
     # No endpoint argument: the exporter reads OTEL_EXPORTER_OTLP_ENDPOINT and
     # appends the /v1/traces path itself.
     tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
