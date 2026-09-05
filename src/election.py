@@ -7,6 +7,7 @@ needed is on `coordination.k8s.io/leases` rather than on `configmaps`.
 """
 
 import asyncio
+import os
 import socket
 import uuid
 from collections.abc import Callable, Coroutine
@@ -28,6 +29,47 @@ candidate_id = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
 LeaderTask = Callable[[], Coroutine[Any, Any, None]]
 
 _MAX_BACKOFF = 60.0
+
+# Below this, a run of failed lock reads is ordinary churn — a rollout, an API
+# server blip, an RBAC change landing. Above it, this replica is stuck.
+_LOCK_FAILURE_ALERT_AFTER = 5
+
+
+class _ObservedLeaseLock(LeaseLock):
+    """A LeaseLock that escalates a persistent inability to read the lease.
+
+    `LeaderElection.acquire()` swallows lock errors and retries forever, so a
+    replica denied RBAC on leases sits as a silent non-leader with nothing for
+    `run_forever` to catch. Count consecutive failures and complain once, at a
+    level that reaches the error channel, instead of per retry.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._failures = 0
+
+    async def get(self, name: str, namespace: str):
+        found, record = await super().get(name, namespace)
+
+        # A 404 is normal: nobody has created the lease yet.
+        if found or getattr(record, "status", None) == 404:
+            if self._failures >= _LOCK_FAILURE_ALERT_AFTER:
+                logger.warning(
+                    "Lease %s readable again after %d failures", name, self._failures
+                )
+            self._failures = 0
+        else:
+            self._failures += 1
+            if self._failures == _LOCK_FAILURE_ALERT_AFTER:
+                logger.error(
+                    "Cannot read lease %s after %d attempts (%s); this replica "
+                    "cannot take leadership",
+                    name,
+                    self._failures,
+                    getattr(record, "reason", record),
+                )
+
+        return found, record
 
 
 def _timings() -> tuple[int, float, float]:
@@ -76,7 +118,7 @@ async def _contend_once(api: client.ApiClient, leader_task: LeaderTask) -> None:
     lease_duration, renew_deadline, retry_period = _timings()
     election = leaderelection.LeaderElection(
         electionconfig.Config(
-            LeaseLock(
+            _ObservedLeaseLock(
                 app_config.common.LEADER_ELECTION_LOCK_NAME,
                 app_config.common.LEADER_ELECTION_NAMESPACE,
                 candidate_id,
@@ -105,7 +147,12 @@ async def run_forever(leader_task: LeaderTask) -> None:
         await leader_task()
         return
 
-    await kube_config.load_config()
+    # Explicit rather than load_config(), which warns about a missing
+    # ~/.kube/config on the way to picking the in-cluster credentials.
+    if os.environ.get("KUBERNETES_SERVICE_HOST"):
+        kube_config.load_incluster_config()
+    else:
+        await kube_config.load_kube_config()
 
     _, _, retry_period = _timings()
     backoff = retry_period

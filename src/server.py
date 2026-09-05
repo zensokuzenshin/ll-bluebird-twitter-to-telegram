@@ -172,7 +172,15 @@ async def start():
 
     port = int(os.environ.get("PORT", "8000"))
     uvicorn_config = uvicorn.Config(
-        app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*"
+        app,
+        host="0.0.0.0",
+        port=port,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+        # Uvicorn's own dictConfig would replace our JSON handler, and the only
+        # route here is the kubelet probe.
+        log_config=None,
+        access_log=False,
     )
     server = uvicorn.Server(uvicorn_config)
 

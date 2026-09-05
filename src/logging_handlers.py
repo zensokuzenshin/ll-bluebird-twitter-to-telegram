@@ -10,9 +10,14 @@ logger = logging.getLogger(__name__)
 _TELEGRAM_MAX_CHARS = 4096
 _TRUNCATED_AT = 3900
 
-# Telemetry export failures are logged at ERROR and retried; they are an infra
-# problem visible in the pod logs, not something to page a Telegram chat about.
-_MUTED_LOGGERS = ("opentelemetry.",)
+# Loggers that report retryable churn at ERROR, once per retry. Losing a lease
+# update race (409) is how leader election is *supposed* to work, and a failed
+# span export fixes itself. Both still reach stdout and Loki; election.py
+# escalates the failures that turn out to be persistent.
+_MUTED_LOGGERS = (
+    "opentelemetry.",
+    "kubernetes_asyncio.leaderelection.",
+)
 
 
 class TelegramLogHandler(logging.Handler):
