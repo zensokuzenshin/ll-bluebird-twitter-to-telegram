@@ -51,4 +51,6 @@ LEADER_ELECTION_LOCK_NAME = os.getenv(
     "LEADER_ELECTION_LOCK_NAME", "ll-bluebird-dev-lock"
 )
 LEADER_ELECTION_NAMESPACE = os.getenv("LEADER_ELECTION_NAMESPACE", "default")
-LEADER_ELECTION_LEASE_TTL = int(os.getenv("LEADER_ELECTION_LEASE_TTL", "30"))  # seconds
+LEADER_ELECTION_LEASE_TTL = int(
+    os.getenv("LEADER_ELECTION_LEASE_TTL", "120")
+)  # seconds

@@ -9,6 +9,7 @@ needed is on `coordination.k8s.io/leases` rather than on `configmaps`.
 import asyncio
 import os
 import socket
+import time
 import uuid
 from collections.abc import Callable, Coroutine
 from typing import Any
@@ -33,6 +34,10 @@ _MAX_BACKOFF = 60.0
 # Below this, a run of failed lock reads is ordinary churn — a rollout, an API
 # server blip, an RBAC change landing. Above it, this replica is stuck.
 _LOCK_FAILURE_ALERT_AFTER = 5
+
+_ELECTION_FAILURE_ALERT_AFTER = 5
+
+_FAILURE_STREAK_RESET_AFTER = 300.0
 
 
 class _ObservedLeaseLock(LeaseLock):
@@ -193,6 +198,7 @@ async def run_forever(leader_task: LeaderTask) -> None:
 
     _, _, retry_period = _timings()
     backoff = retry_period
+    failures = 0
 
     # Shared across rounds, so a task that registers itself just as one election
     # unwinds is still cancelled by the next round's cleanup.
@@ -200,6 +206,7 @@ async def run_forever(leader_task: LeaderTask) -> None:
 
     async with client.ApiClient() as api:
         while True:
+            started = time.monotonic()
             try:
                 try:
                     await _contend_once(api, leader_task, leading)
@@ -210,8 +217,23 @@ async def run_forever(leader_task: LeaderTask) -> None:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("Leader election failed; retrying in %.0fs", backoff)
+                if time.monotonic() - started >= _FAILURE_STREAK_RESET_AFTER:
+                    failures = 0
+                    backoff = retry_period
+                failures += 1
+                escalate = failures == _ELECTION_FAILURE_ALERT_AFTER
+                (logger.error if escalate else logger.warning)(
+                    "Leader election failed %d time(s) in a row; retrying in %.0fs",
+                    failures,
+                    backoff,
+                    exc_info=True,
+                )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, _MAX_BACKOFF)
             else:
+                if failures >= _ELECTION_FAILURE_ALERT_AFTER:
+                    logger.warning(
+                        "Leader election recovered after %d failures", failures
+                    )
+                failures = 0
                 backoff = retry_period
