@@ -5,6 +5,7 @@ import os
 import sys
 import time
 
+import httpx
 import uvicorn
 from fastapi import FastAPI, Request, Response
 
@@ -21,6 +22,15 @@ app = FastAPI(title="Twitter to Telegram Forwarder")
 
 # Sort fallback for a tweet whose timestamp we could not parse
 _EPOCH = datetime.datetime.min.replace(tzinfo=datetime.UTC)
+
+# Retrying these on the ordinary error cadence is exactly backwards: the key is
+# rejected or the balance is spent, and no amount of polling brings either back.
+_NON_TRANSIENT_STATUS = frozenset({401, 402, 403})
+
+# One poll loop per process. The election is meant to guarantee that on its own,
+# but a leaked leader task once turned every apiserver blip into another
+# concurrent poller, so the invariant is enforced here rather than assumed.
+_polling = False
 
 
 @app.middleware("http")
@@ -119,8 +129,19 @@ async def _poll_once(twitter_client: TwitterAPI) -> bool:
     return True
 
 
-async def check_recent_message(twitter_client: TwitterAPI) -> None:
-    """Leader-only loop: forward every tweet posted since the last one we sent."""
+def _retry_delay(error: BaseException, backoff: int) -> tuple[int, str]:
+    """Seconds to wait after a failed cycle, and the outcome to record for it."""
+    if (
+        isinstance(error, httpx.HTTPStatusError)
+        and error.response.status_code in _NON_TRANSIENT_STATUS
+    ):
+        return config.common.TWITTER_QUERY_INTERVAL_ON_AUTH_ERROR, "auth_error"
+    return backoff, "error"
+
+
+async def _poll_forever(twitter_client: TwitterAPI) -> None:
+    backoff = config.common.TWITTER_QUERY_INTERVAL_ON_ERROR
+
     while True:
         started = time.monotonic()
         try:
@@ -129,6 +150,7 @@ async def check_recent_message(twitter_client: TwitterAPI) -> None:
             telemetry.poll_cycle_duration.record(
                 time.monotonic() - started, {"outcome": "ok"}
             )
+            backoff = config.common.TWITTER_QUERY_INTERVAL_ON_ERROR
 
             await asyncio.sleep(
                 # Someone is posting, so come back sooner
@@ -138,12 +160,37 @@ async def check_recent_message(twitter_client: TwitterAPI) -> None:
             )
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as error:
             logger.exception("Error in check_recent_message loop")
+            delay, outcome = _retry_delay(error, backoff)
             telemetry.poll_cycle_duration.record(
-                time.monotonic() - started, {"outcome": "error"}
+                time.monotonic() - started, {"outcome": outcome}
             )
-            await asyncio.sleep(config.common.TWITTER_QUERY_INTERVAL_ON_ERROR)
+            # Climb towards the ordinary interval, so a sustained outage stops
+            # polling an order of magnitude more often than a healthy run does.
+            backoff = min(backoff * 2, config.common.TWITTER_QUERY_INTERVAL_ORDINARY)
+            await asyncio.sleep(delay)
+
+
+async def check_recent_message(twitter_client: TwitterAPI) -> None:
+    """Leader-only loop: forward every tweet posted since the last one we sent."""
+    global _polling
+
+    if _polling:
+        # Whatever is already polling does the same work with the same client,
+        # so let it carry on rather than doubling the call rate.
+        logger.error(
+            "A poll loop is already running in this process; refusing to start a "
+            "second one. The election started a leader task without stopping the "
+            "previous one."
+        )
+        return
+
+    _polling = True
+    try:
+        await _poll_forever(twitter_client)
+    finally:
+        _polling = False
 
 
 async def start():

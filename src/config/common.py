@@ -15,6 +15,11 @@ TWITTER_QUERY_INTERVAL_ON_MESSAGE = int(
 TWITTER_QUERY_INTERVAL_ON_ERROR = int(
     os.getenv("TWITTER_QUERY_INTERVAL_ON_ERROR", "60")
 )
+# A rejected key or an empty balance needs a human, not another request. Poll
+# far slower than usual until one shows up, instead of 15x faster.
+TWITTER_QUERY_INTERVAL_ON_AUTH_ERROR = int(
+    os.getenv("TWITTER_QUERY_INTERVAL_ON_AUTH_ERROR", "3600")
+)
 
 # Comma-separated "provider:model" entries, tried in order until one succeeds
 DEFAULT_TRANSLATION_MODELS = "anthropic:claude-sonnet-5"

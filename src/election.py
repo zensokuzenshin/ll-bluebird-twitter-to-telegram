@@ -113,9 +113,43 @@ async def _on_stopped_leading() -> None:
     )
 
 
-async def _contend_once(api: client.ApiClient, leader_task: LeaderTask) -> None:
-    """Wait for the lease, hold it, return once it is lost."""
+async def _stop_leading(tasks: set[asyncio.Task[None]]) -> None:
+    """Cancel the leader tasks and wait for them, so none outlives its election."""
+    pending = [task for task in tasks if not task.done()]
+    # Requested on all of them before awaiting any, so a cancellation delivered
+    # to us midway still leaves every one of them tearing down.
+    for task in pending:
+        task.cancel()
+    if pending:
+        # return_exceptions: _lead has already logged anything worth seeing, and
+        # one task's error must not hide another's teardown.
+        await asyncio.gather(*pending, return_exceptions=True)
+    tasks.difference_update(pending)
+
+
+async def _contend_once(
+    api: client.ApiClient,
+    leader_task: LeaderTask,
+    leading: set[asyncio.Task[None]],
+) -> None:
+    """Wait for the lease, hold it, return once it is lost.
+
+    `LeaderElection.run()` starts the leader task itself and only cancels it if
+    `renew_loop()` *returns* (leaderelection.py:70-77). When the renewal raises
+    instead — the apiserver refusing a connection is enough — that cancel is
+    skipped, the task is orphaned, and `run_forever` starts a fresh election on
+    top of a poll loop that is still running. Every such blip used to add one
+    more concurrent poller against a metered API. So the task registers itself
+    in `leading` and every exit path here cancels whatever is left.
+    """
     lease_duration, renew_deadline, retry_period = _timings()
+
+    async def lead() -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            leading.add(task)
+        await _lead(leader_task)
+
     election = leaderelection.LeaderElection(
         electionconfig.Config(
             _ObservedLeaseLock(
@@ -127,11 +161,14 @@ async def _contend_once(api: client.ApiClient, leader_task: LeaderTask) -> None:
             lease_duration=lease_duration,
             renew_deadline=renew_deadline,
             retry_period=retry_period,
-            onstarted_leading=lambda: _lead(leader_task),
+            onstarted_leading=lead,
             onstopped_leading=_on_stopped_leading,
         )
     )
-    await election.run()
+    try:
+        await election.run()
+    finally:
+        await _stop_leading(leading)
 
 
 async def run_forever(leader_task: LeaderTask) -> None:
@@ -157,11 +194,15 @@ async def run_forever(leader_task: LeaderTask) -> None:
     _, _, retry_period = _timings()
     backoff = retry_period
 
+    # Shared across rounds, so a task that registers itself just as one election
+    # unwinds is still cancelled by the next round's cleanup.
+    leading: set[asyncio.Task[None]] = set()
+
     async with client.ApiClient() as api:
         while True:
             try:
                 try:
-                    await _contend_once(api, leader_task)
+                    await _contend_once(api, leader_task, leading)
                 finally:
                     # _on_stopped_leading covers a clean loss; this also covers
                     # the election erroring out while we were still leader.
