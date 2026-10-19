@@ -41,7 +41,6 @@ async def _create_connection_pool() -> asyncpg.Pool:
         max_size=10,
         setup=_setup_connection,
         timeout=5.0,
-        # CockroachDB can be slow to respond
         command_timeout=10.0,
     )
 
@@ -78,18 +77,16 @@ async def close_connection_pool() -> None:
 
 
 async def _check_table_exists(conn: asyncpg.Connection, table_name: str) -> bool:
-    # Explicit transaction; CockroachDB otherwise errors with "not in a transaction"
-    async with conn.transaction():
-        return await conn.fetchval(
-            """
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables
-                WHERE table_schema = 'public'
-                AND table_name = $1
-            )
-            """,
-            table_name,
+    return await conn.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_schema = 'public'
+            AND table_name = $1
         )
+        """,
+        table_name,
+    )
 
 
 def get_expected_schema_version() -> str:
@@ -131,8 +128,7 @@ async def get_current_schema_version() -> str | None:
             )
             return None
 
-        async with conn.transaction():
-            return await conn.fetchval("SELECT version_num FROM alembic_version")
+        return await conn.fetchval("SELECT version_num FROM alembic_version")
 
 
 async def _insert_translated_message(
@@ -228,7 +224,7 @@ async def check_db_connection() -> tuple[bool, str | None]:
     try:
         pool = await get_connection_pool()
 
-        async with pool.acquire() as conn, conn.transaction():
+        async with pool.acquire() as conn:
             result = await conn.fetchval("SELECT 1 as connected")
 
         if result == 1:

@@ -30,35 +30,15 @@ DEFAULT_RETRYABLE_EXCEPTIONS = (
     asyncpg.exceptions.ConnectionFailureError,
     # Transaction-related errors
     asyncpg.exceptions.DeadlockDetectedError,
-    asyncpg.exceptions.SerializationError,  # Important for CockroachDB's serializable isolation
+    asyncpg.exceptions.SerializationError,
     # Query-related errors
     asyncpg.exceptions.QueryCanceledError,  # For statement timeout
-    # CockroachDB-specific retry cases - detected by error message patterns
-    # These are raised as generic PostgresError with specific codes/messages
-    asyncpg.exceptions.PostgresError,  # Base class for all PostgreSQL errors - filtered by message
 )
-
-
-# CockroachDB-specific error messages that indicate a retry is appropriate
-COCKROACHDB_RETRY_MESSAGES = [
-    "restart transaction",
-    "connection reset by peer",
-    "40001",  # Serialization error code
-    "SQLSTATE 40001",  # Serialization error code
-    "serialization failure",
-    "read/write dependencies with inconsistent values",
-    "transaction deadline exceeded",
-    "transaction aborted",
-    "not in a transaction",
-    "Transaction waiting for resume",
-    "commit result is ambiguous",
-    "transaction is too large to complete",
-]
 
 
 def is_retryable_error(e: Exception) -> bool:
     """
-    Determine if an exception is retryable, with special handling for CockroachDB errors.
+    Determine if an exception is retryable.
 
     Args:
         e: The exception to check
@@ -66,23 +46,7 @@ def is_retryable_error(e: Exception) -> bool:
     Returns:
         bool: True if the exception is retryable, False otherwise
     """
-    # Check if it's one of our explicitly defined retryable exception types
-    if any(
-        isinstance(e, exc_type)
-        for exc_type in DEFAULT_RETRYABLE_EXCEPTIONS
-        if exc_type is not asyncpg.exceptions.PostgresError
-    ):
-        return True
-
-    # For PostgresError, check if it's a CockroachDB-specific error message
-    if isinstance(e, asyncpg.exceptions.PostgresError):
-        error_str = str(e).lower()
-        for retry_msg in COCKROACHDB_RETRY_MESSAGES:
-            if retry_msg.lower() in error_str:
-                logger.info("Detected CockroachDB retryable error: %s", error_str)
-                return True
-
-    return False
+    return isinstance(e, DEFAULT_RETRYABLE_EXCEPTIONS)
 
 
 async def retry_with_backoff[T](
@@ -97,7 +61,6 @@ async def retry_with_backoff[T](
 ) -> T:
     """
     Retry an async operation with exponential backoff.
-    Includes special handling for CockroachDB-specific errors.
 
     Args:
         operation: The async function to retry
@@ -151,26 +114,7 @@ async def retry_with_backoff[T](
                 )
                 raise
 
-            # For CockroachDB serialization errors, use a more aggressive retry strategy
-            if isinstance(e, asyncpg.exceptions.SerializationError) or (
-                isinstance(e, asyncpg.exceptions.PostgresError) and "40001" in str(e)
-            ):
-                # For serialization failures, use a different backoff strategy
-                # CockroachDB docs recommend immediate retry for serialization failures
-                # with exponential backoff only after multiple failures
-                if retries <= 1:
-                    # For first retry, use minimal delay
-                    backoff_time = initial_backoff * 0.1
-                else:
-                    # After that, use normal exponential backoff
-                    backoff_time = min(
-                        initial_backoff * (backoff_factor ** (retries - 1)), max_backoff
-                    )
-            else:
-                # Normal exponential backoff for other errors
-                backoff_time = min(
-                    initial_backoff * (backoff_factor**retries), max_backoff
-                )
+            backoff_time = min(initial_backoff * (backoff_factor**retries), max_backoff)
 
             # Add jitter (random variation) to avoid thundering herd problem
             jitter_amount = backoff_time * jitter * random.uniform(-1, 1)

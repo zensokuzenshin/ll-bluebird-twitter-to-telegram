@@ -1106,18 +1106,6 @@ wheels = [
 ]
 
 [[package]]
-name = "sqlalchemy-cockroachdb"
-version = "2.0.4"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "sqlalchemy" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c0/46/1462dd4734c58e04b754db71a9607de6d748dedea86e30007b5ae7b4e3db/sqlalchemy_cockroachdb-2.0.4.tar.gz", hash = "sha256:f66354d2b93da89cb4524c5b78a44d0cf5a8943d328b7f0aee4aa1dfc6178b65", size = 31803, upload-time = "2026-04-23T18:12:28.147Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/f2/f1/e08ec3fc57b6f890e8f6eb16734c4865626635f4863cc2fe7d259699ce7b/sqlalchemy_cockroachdb-2.0.4-py3-none-any.whl", hash = "sha256:0804306a733a1fe09b2d496eadf8bf35d878862b6138e69175136fa2ca0ce5d0", size = 22726, upload-time = "2026-04-23T18:12:26.936Z" },
-]
-
-[[package]]
 name = "starlette"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1165,7 +1153,6 @@ dependencies = [
 alembic = [
     { name = "alembic" },
     { name = "psycopg2-binary" },
-    { name = "sqlalchemy-cockroachdb" },
 ]
 lint = [
     { name = "ruff" },
@@ -1195,7 +1182,6 @@ requires-dist = [
 alembic = [
     { name = "alembic", specifier = ">=1.19.0" },
     { name = "psycopg2-binary", specifier = ">=2.9.12" },
-    { name = "sqlalchemy-cockroachdb", specifier = ">=2.0.4" },
 ]
 lint = [{ name = "ruff", specifier = ">=0.16.0" }]
 

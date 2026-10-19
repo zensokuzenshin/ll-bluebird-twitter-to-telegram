@@ -14,8 +14,7 @@ sys.path.append(
 # Import config for DSN
 from config.common import POSTGRES_DSN
 
-# SQLAlchemy requires distinct DSN for CRDB
-dsn = POSTGRES_DSN.replace("postgresql://", "cockroachdb://")
+dsn = POSTGRES_DSN
 
 # Set up logger
 logger = logging.getLogger("alembic.env")
@@ -65,21 +64,10 @@ def run_migrations_online() -> None:
 
     In this scenario we need to create an Engine
     and associate a connection with the context.
-
-    Includes special handling for CockroachDB.
     """
     # Use the DSN from config instead of relying on sqlalchemy.url in the config file
     configuration = config.get_section(config.config_ini_section, {})
     configuration["sqlalchemy.url"] = dsn
-
-    # Add CockroachDB-specific settings
-    # These help with transaction retry logic and performance
-    cockroach_opts = {
-        "connect_args": {
-            "application_name": "lovelive-bluebird-twitter-to-telegram-migration",
-        }
-    }
-    configuration.update(cockroach_opts)
 
     connectable = engine_from_config(
         configuration,
